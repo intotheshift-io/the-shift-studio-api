@@ -52,7 +52,6 @@ async function initDb() {
     );
   `);
 
-  // Sécurité pour les bases déjà créées avant l'ajout du rôle admin/client.
   await pool.query(`
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'client';
@@ -225,26 +224,34 @@ app.put("/api/projects/:id", auth, async (req, res) => {
 });
 
 // =========================
-// ADMIN — lecture seule
+// ADMIN — résumé
 // =========================
 
 app.get("/api/admin/summary", auth, requireAdmin, async (req, res) => {
-  const [clients, projects, statuses] = await Promise.all([
-    pool.query(`SELECT COUNT(*)::int AS count FROM users WHERE COALESCE(role, 'client') <> 'admin'`),
+  const [users, clients, projects, submitted] = await Promise.all([
+    pool.query(`SELECT COUNT(*)::int AS count FROM users`),
+    pool.query(`SELECT COUNT(*)::int AS count FROM users WHERE COALESCE(role, 'client') = 'client'`),
     pool.query(`SELECT COUNT(*)::int AS count FROM projects`),
     pool.query(`
-      SELECT status, COUNT(*)::int AS count
+      SELECT COUNT(*)::int AS count
       FROM projects
-      GROUP BY status
+      WHERE status ILIKE '%transmis%'
+         OR status ILIKE '%submitted%'
+         OR COALESCE((data->>'configTransmise')::boolean, false) = true
     `)
   ]);
 
   res.json({
+    usersCount: users.rows[0]?.count || 0,
     clientsCount: clients.rows[0]?.count || 0,
     projectsCount: projects.rows[0]?.count || 0,
-    statuses: statuses.rows
+    sentConfigs: submitted.rows[0]?.count || 0
   });
 });
+
+// =========================
+// ADMIN — comptes
+// =========================
 
 app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
   const result = await pool.query(`
@@ -274,10 +281,15 @@ app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
       role: row.role || "client",
       createdAt: row.created_at,
       projectsCount: row.projects_count,
-      lastProjectUpdate: row.last_project_update
+      lastProjectUpdate: row.last_project_update,
+      status: "actif"
     }))
   });
 });
+
+// =========================
+// ADMIN — projets / autodiags
+// =========================
 
 app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
   const result = await pool.query(`
@@ -289,6 +301,7 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
       p.trial_ends_at,
       p.created_at,
       p.updated_at,
+      u.id AS user_id,
       u.email,
       u.first_name,
       u.last_name,
@@ -299,22 +312,129 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
   `);
 
   res.json({
-    projects: result.rows.map((row) => ({
-      id: row.id,
-      title: row.title,
-      status: row.status,
-      data: row.data,
-      trialEndsAt: row.trial_ends_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      client: {
-        email: row.email,
-        firstName: row.first_name || "",
-        lastName: row.last_name || "",
-        companyName: row.company_name || ""
-      }
-    }))
+    projects: result.rows.map((row) => {
+      const data = row.data || {};
+
+      return {
+        id: row.id,
+        title:
+          data.autodiagTitle ||
+          data.title ||
+          data.titre ||
+          data.projectTitle ||
+          row.title ||
+          "Autodiag sans titre",
+        status: row.status || data.status || "brouillon",
+        pack:
+          data.pack ||
+          data.packChoisi ||
+          data.selectedPack ||
+          data.passationsPack ||
+          "—",
+        configTransmise:
+          data.configTransmise ||
+          data.config_transmise ||
+          data.submitted ||
+          false,
+        data,
+        trialEndsAt: row.trial_ends_at,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        clientName:
+          row.company_name ||
+          `${row.first_name || ""} ${row.last_name || ""}`.trim() ||
+          row.email ||
+          "—",
+        clientEmail: row.email || "",
+        client: {
+          id: row.user_id,
+          email: row.email,
+          firstName: row.first_name || "",
+          lastName: row.last_name || "",
+          companyName: row.company_name || ""
+        }
+      };
+    })
   });
+});
+
+// =========================
+// ADMIN — création de comptes
+// =========================
+
+app.post("/api/admin/users", auth, requireAdmin, async (req, res) => {
+  const {
+    email,
+    password,
+    firstName,
+    lastName,
+    companyName,
+    role
+  } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email et mot de passe requis" });
+  }
+
+  const safeRole = ["client", "admin", "partner"].includes(role) ? role : "client";
+  const passwordHash = await bcrypt.hash(password, 10);
+
+  try {
+    const userResult = await pool.query(
+      `INSERT INTO users (email, password_hash, first_name, last_name, company_name, role)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, email, first_name, last_name, company_name, role, created_at`,
+      [
+        email.toLowerCase(),
+        passwordHash,
+        firstName || "",
+        lastName || "",
+        companyName || "",
+        safeRole
+      ]
+    );
+
+    res.json({ user: formatUser(userResult.rows[0]) });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({ error: "Cet email existe déjà" });
+    }
+
+    console.error("Erreur création utilisateur admin", err);
+    res.status(500).json({ error: "Erreur création utilisateur" });
+  }
+});
+
+// =========================
+// ADMIN — changement de rôle
+// =========================
+
+app.patch("/api/admin/users/:id/role", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { role } = req.body;
+
+  if (!["client", "admin", "partner"].includes(role)) {
+    return res.status(400).json({ error: "Rôle invalide" });
+  }
+
+  try {
+    const userResult = await pool.query(
+      `UPDATE users
+       SET role = $1
+       WHERE id = $2
+       RETURNING id, email, first_name, last_name, company_name, role, created_at`,
+      [role, id]
+    );
+
+    if (!userResult.rows[0]) {
+      return res.status(404).json({ error: "Utilisateur introuvable" });
+    }
+
+    res.json({ user: formatUser(userResult.rows[0]) });
+  } catch (err) {
+    console.error("Erreur changement de rôle", err);
+    res.status(500).json({ error: "Erreur changement de rôle" });
+  }
 });
 
 initDb().then(() => {
