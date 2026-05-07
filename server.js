@@ -633,6 +633,11 @@ L’équipe Into The Shift`,
   <p>L’équipe Into The Shift</p>
 </div>`
     });
+    console.log("ADMIN USER CREATED EMAIL STATUS", {
+  email: user.email,
+  emailSent: mailResult.sent,
+  emailStatus: mailResult.reason || "SENT"
+});
 
     res.json({
       user: formatUser(user),
