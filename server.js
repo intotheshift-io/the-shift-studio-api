@@ -24,6 +24,20 @@ app.use(cors({
 
 app.use(express.json({ limit: "5mb" }));
 
+function formatUser(user) {
+  if (!user) return null;
+
+  return {
+    id: user.id,
+    email: user.email,
+    firstName: user.first_name || "",
+    lastName: user.last_name || "",
+    companyName: user.company_name || "",
+    role: user.role || "client",
+    createdAt: user.created_at || null
+  };
+}
+
 async function initDb() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -33,8 +47,15 @@ async function initDb() {
       first_name TEXT,
       last_name TEXT,
       company_name TEXT,
+      role TEXT DEFAULT 'client',
       created_at TIMESTAMP DEFAULT NOW()
     );
+  `);
+
+  // Sécurité pour les bases déjà créées avant l'ajout du rôle admin/client.
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'client';
   `);
 
   await pool.query(`
@@ -65,6 +86,14 @@ function auth(req, res, next) {
   }
 }
 
+function requireAdmin(req, res, next) {
+  if (!req.user || req.user.role !== "admin") {
+    return res.status(403).json({ error: "Accès admin refusé" });
+  }
+
+  next();
+}
+
 app.get("/", (req, res) => {
   res.json({ ok: true, app: "The Shift Studio API" });
 });
@@ -80,9 +109,9 @@ app.post("/api/register", async (req, res) => {
 
   try {
     const userResult = await pool.query(
-      `INSERT INTO users (email, password_hash, first_name, last_name, company_name)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, email, first_name, last_name, company_name`,
+      `INSERT INTO users (email, password_hash, first_name, last_name, company_name, role)
+       VALUES ($1, $2, $3, $4, $5, 'client')
+       RETURNING id, email, first_name, last_name, company_name, role, created_at`,
       [email.toLowerCase(), passwordHash, firstName || "", lastName || "", companyName || ""]
     );
 
@@ -95,19 +124,28 @@ app.post("/api/register", async (req, res) => {
       [user.id, "Mon premier customizer", {}]
     );
 
-    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: "7d" });
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role || "client" },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
 
-    res.json({ token, user, project: projectResult.rows[0] });
+    res.json({ token, user: formatUser(user), project: projectResult.rows[0] });
   } catch (err) {
     if (err.code === "23505") {
       return res.status(409).json({ error: "Cet email existe déjà" });
     }
+    console.error("Erreur inscription", err);
     res.status(500).json({ error: "Erreur inscription" });
   }
 });
 
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email et mot de passe requis" });
+  }
 
   const result = await pool.query(
     `SELECT * FROM users WHERE email = $1`,
@@ -120,27 +158,27 @@ app.post("/api/login", async (req, res) => {
   const valid = await bcrypt.compare(password, user.password_hash);
   if (!valid) return res.status(401).json({ error: "Identifiants incorrects" });
 
-  const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: "7d" });
+  const token = jwt.sign(
+    { id: user.id, email: user.email, role: user.role || "client" },
+    JWT_SECRET,
+    { expiresIn: "7d" }
+  );
 
   res.json({
     token,
-    user: {
-      id: user.id,
-      email: user.email,
-      firstName: user.first_name,
-      lastName: user.last_name,
-      companyName: user.company_name
-    }
+    user: formatUser(user)
   });
 });
 
 app.get("/api/me", auth, async (req, res) => {
   const result = await pool.query(
-    `SELECT id, email, first_name, last_name, company_name FROM users WHERE id = $1`,
+    `SELECT id, email, first_name, last_name, company_name, role, created_at
+     FROM users
+     WHERE id = $1`,
     [req.user.id]
   );
 
-  res.json({ user: result.rows[0] });
+  res.json({ user: formatUser(result.rows[0]) });
 });
 
 app.get("/api/projects", auth, async (req, res) => {
@@ -184,6 +222,99 @@ app.put("/api/projects/:id", auth, async (req, res) => {
   }
 
   res.json({ project: result.rows[0] });
+});
+
+// =========================
+// ADMIN — lecture seule
+// =========================
+
+app.get("/api/admin/summary", auth, requireAdmin, async (req, res) => {
+  const [clients, projects, statuses] = await Promise.all([
+    pool.query(`SELECT COUNT(*)::int AS count FROM users WHERE COALESCE(role, 'client') <> 'admin'`),
+    pool.query(`SELECT COUNT(*)::int AS count FROM projects`),
+    pool.query(`
+      SELECT status, COUNT(*)::int AS count
+      FROM projects
+      GROUP BY status
+    `)
+  ]);
+
+  res.json({
+    clientsCount: clients.rows[0]?.count || 0,
+    projectsCount: projects.rows[0]?.count || 0,
+    statuses: statuses.rows
+  });
+});
+
+app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
+  const result = await pool.query(`
+    SELECT
+      u.id,
+      u.email,
+      u.first_name,
+      u.last_name,
+      u.company_name,
+      u.role,
+      u.created_at,
+      COUNT(p.id)::int AS projects_count,
+      MAX(p.updated_at) AS last_project_update
+    FROM users u
+    LEFT JOIN projects p ON p.user_id = u.id
+    GROUP BY u.id
+    ORDER BY u.created_at DESC
+  `);
+
+  res.json({
+    clients: result.rows.map((row) => ({
+      id: row.id,
+      email: row.email,
+      firstName: row.first_name || "",
+      lastName: row.last_name || "",
+      companyName: row.company_name || "",
+      role: row.role || "client",
+      createdAt: row.created_at,
+      projectsCount: row.projects_count,
+      lastProjectUpdate: row.last_project_update
+    }))
+  });
+});
+
+app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
+  const result = await pool.query(`
+    SELECT
+      p.id,
+      p.title,
+      p.status,
+      p.data,
+      p.trial_ends_at,
+      p.created_at,
+      p.updated_at,
+      u.email,
+      u.first_name,
+      u.last_name,
+      u.company_name
+    FROM projects p
+    LEFT JOIN users u ON u.id = p.user_id
+    ORDER BY p.updated_at DESC
+  `);
+
+  res.json({
+    projects: result.rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      status: row.status,
+      data: row.data,
+      trialEndsAt: row.trial_ends_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      client: {
+        email: row.email,
+        firstName: row.first_name || "",
+        lastName: row.last_name || "",
+        companyName: row.company_name || ""
+      }
+    }))
+  });
 });
 
 initDb().then(() => {
