@@ -181,6 +181,20 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, app: "The Shift Studio API" });
 });
 
+app.get("/debug-version", (req, res) => {
+  res.json({
+    ok: true,
+    version: "emails-delete-debug-v2",
+    hasEmailSentResponse: true,
+    hasDeleteUserRoute: true,
+    smtpConfigured: mailerIsConfigured(),
+    smtpHost: SMTP_HOST || null,
+    smtpPort: SMTP_PORT || null,
+    smtpSecure: SMTP_SECURE,
+    frontendUrl: FRONTEND_URL
+  });
+});
+
 app.post("/api/register", async (req, res) => {
   const { email, password, firstName, lastName, companyName } = req.body;
 
@@ -252,10 +266,6 @@ app.post("/api/login", async (req, res) => {
     user: formatUser(user)
   });
 });
-
-// =========================
-// MOT DE PASSE OUBLIÉ
-// =========================
 
 app.post("/api/forgot-password", async (req, res) => {
   const { email } = req.body;
@@ -427,10 +437,6 @@ app.put("/api/projects/:id", auth, async (req, res) => {
   res.json({ project: result.rows[0] });
 });
 
-// =========================
-// ADMIN — résumé
-// =========================
-
 app.get("/api/admin/summary", auth, requireAdmin, async (req, res) => {
   const [users, clients, projects, submitted] = await Promise.all([
     pool.query(`SELECT COUNT(*)::int AS count FROM users`),
@@ -452,10 +458,6 @@ app.get("/api/admin/summary", auth, requireAdmin, async (req, res) => {
     sentConfigs: submitted.rows[0]?.count || 0
   });
 });
-
-// =========================
-// ADMIN — comptes
-// =========================
 
 app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
   const result = await pool.query(`
@@ -490,10 +492,6 @@ app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
     }))
   });
 });
-
-// =========================
-// ADMIN — projets / autodiags
-// =========================
 
 app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
   const result = await pool.query(`
@@ -562,9 +560,45 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
   });
 });
 
-// =========================
-// ADMIN — création de comptes + email
-// =========================
+app.post("/api/admin/test-email", auth, requireAdmin, async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ error: "Email de test requis" });
+  }
+
+  const mailResult = await sendTransactionalEmail({
+    to: email,
+    subject: "Test email Shift Studio",
+    text:
+`Bonjour,
+
+Ceci est un email de test envoyé depuis Shift Studio.
+
+Si vous recevez ce message, la configuration SMTP fonctionne.
+
+L’équipe Into The Shift`,
+    html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.5">
+  <p>Bonjour,</p>
+  <p>Ceci est un email de test envoyé depuis <strong>Shift Studio</strong>.</p>
+  <p>Si vous recevez ce message, la configuration SMTP fonctionne.</p>
+  <p>L’équipe Into The Shift</p>
+</div>`
+  });
+
+  console.log("ADMIN TEST EMAIL STATUS", {
+    email,
+    emailSent: mailResult.sent,
+    emailStatus: mailResult.reason || "SENT"
+  });
+
+  res.json({
+    ok: mailResult.sent,
+    emailSent: mailResult.sent,
+    emailStatus: mailResult.reason || "SENT"
+  });
+});
 
 app.post("/api/admin/users", auth, requireAdmin, async (req, res) => {
   const {
@@ -633,11 +667,12 @@ L’équipe Into The Shift`,
   <p>L’équipe Into The Shift</p>
 </div>`
     });
+
     console.log("ADMIN USER CREATED EMAIL STATUS", {
-  email: user.email,
-  emailSent: mailResult.sent,
-  emailStatus: mailResult.reason || "SENT"
-});
+      email: user.email,
+      emailSent: mailResult.sent,
+      emailStatus: mailResult.reason || "SENT"
+    });
 
     res.json({
       user: formatUser(user),
@@ -653,10 +688,6 @@ L’équipe Into The Shift`,
     res.status(500).json({ error: "Erreur création utilisateur" });
   }
 });
-
-// =========================
-// ADMIN — changement de rôle
-// =========================
 
 app.patch("/api/admin/users/:id/role", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
@@ -685,10 +716,6 @@ app.patch("/api/admin/users/:id/role", auth, requireAdmin, async (req, res) => {
     res.status(500).json({ error: "Erreur changement de rôle" });
   }
 });
-
-// =========================
-// ADMIN — suppression de compte
-// =========================
 
 app.delete("/api/admin/users/:id", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
