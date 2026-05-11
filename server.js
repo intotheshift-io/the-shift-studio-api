@@ -49,6 +49,7 @@ function formatUser(user) {
     lastName: user.last_name || "",
     companyName: user.company_name || "",
     role: user.role || "client",
+    mustChangePassword: user.must_change_password === true,
     createdAt: user.created_at || null
   };
 }
@@ -118,6 +119,7 @@ async function initDb() {
       role TEXT DEFAULT 'client',
       reset_password_token_hash TEXT,
       reset_password_expires_at TIMESTAMP,
+      must_change_password BOOLEAN DEFAULT false,
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
@@ -135,6 +137,11 @@ async function initDb() {
   await pool.query(`
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS reset_password_expires_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT false;
   `);
 
   await pool.query(`
@@ -184,10 +191,12 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "profile-patch-v1",
+    version: "profile-password-first-login-v2",
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
     hasDeleteUserRoute: true,
+    hasPasswordChangeRoute: true,
+    hasMustChangePasswordFlag: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -209,7 +218,7 @@ app.post("/api/register", async (req, res) => {
     const userResult = await pool.query(
       `INSERT INTO users (email, password_hash, first_name, last_name, company_name, role)
        VALUES ($1, $2, $3, $4, $5, 'client')
-       RETURNING id, email, first_name, last_name, company_name, role, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, created_at`,
       [email.toLowerCase(), passwordHash, firstName || "", lastName || "", companyName || ""]
     );
 
@@ -372,7 +381,8 @@ app.post("/api/reset-password", async (req, res) => {
       `UPDATE users
        SET password_hash = $1,
            reset_password_token_hash = NULL,
-           reset_password_expires_at = NULL
+           reset_password_expires_at = NULL,
+           must_change_password = false
        WHERE id = $2`,
       [passwordHash, user.id]
     );
@@ -386,7 +396,7 @@ app.post("/api/reset-password", async (req, res) => {
 
 app.get("/api/me", auth, async (req, res) => {
   const result = await pool.query(
-    `SELECT id, email, first_name, last_name, company_name, role, created_at
+    `SELECT id, email, first_name, last_name, company_name, role, must_change_password, created_at
      FROM users
      WHERE id = $1`,
     [req.user.id]
@@ -405,7 +415,7 @@ app.patch("/api/me", auth, async (req, res) => {
            last_name = $2,
            company_name = $3
        WHERE id = $4
-       RETURNING id, email, first_name, last_name, company_name, role, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, created_at`,
       [
         firstName || "",
         lastName || "",
@@ -422,6 +432,49 @@ app.patch("/api/me", auth, async (req, res) => {
   } catch (err) {
     console.error("Erreur mise à jour profil", err);
     res.status(500).json({ error: "Erreur mise à jour profil" });
+  }
+});
+
+app.patch("/api/me/password", auth, async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: "Mot de passe actuel et nouveau mot de passe requis" });
+  }
+
+  if (String(newPassword).length < 8) {
+    return res.status(400).json({ error: "Le nouveau mot de passe doit contenir au moins 8 caractères" });
+  }
+
+  try {
+    const userResult = await pool.query(
+      `SELECT * FROM users WHERE id = $1`,
+      [req.user.id]
+    );
+
+    const user = userResult.rows[0];
+    if (!user) return res.status(404).json({ error: "Utilisateur introuvable" });
+
+    const valid = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!valid) return res.status(401).json({ error: "Mot de passe actuel incorrect" });
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+
+    const result = await pool.query(
+      `UPDATE users
+       SET password_hash = $1,
+           must_change_password = false,
+           reset_password_token_hash = NULL,
+           reset_password_expires_at = NULL
+       WHERE id = $2
+       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, created_at`,
+      [passwordHash, req.user.id]
+    );
+
+    res.json({ ok: true, user: formatUser(result.rows[0]) });
+  } catch (err) {
+    console.error("Erreur changement mot de passe", err);
+    res.status(500).json({ error: "Erreur changement mot de passe" });
   }
 });
 
@@ -499,6 +552,7 @@ app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
       u.last_name,
       u.company_name,
       u.role,
+      u.must_change_password,
       u.created_at,
       COUNT(p.id)::int AS projects_count,
       MAX(p.updated_at) AS last_project_update
@@ -516,6 +570,7 @@ app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
       lastName: row.last_name || "",
       companyName: row.company_name || "",
       role: row.role || "client",
+      mustChangePassword: row.must_change_password === true,
       createdAt: row.created_at,
       projectsCount: row.projects_count,
       lastProjectUpdate: row.last_project_update,
@@ -650,9 +705,9 @@ app.post("/api/admin/users", auth, requireAdmin, async (req, res) => {
 
   try {
     const userResult = await pool.query(
-      `INSERT INTO users (email, password_hash, first_name, last_name, company_name, role)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, email, first_name, last_name, company_name, role, created_at`,
+      `INSERT INTO users (email, password_hash, first_name, last_name, company_name, role, must_change_password)
+       VALUES ($1, $2, $3, $4, $5, $6, true)
+       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, created_at`,
       [
         email.toLowerCase(),
         passwordHash,
@@ -664,7 +719,7 @@ app.post("/api/admin/users", auth, requireAdmin, async (req, res) => {
     );
 
     const user = userResult.rows[0];
-    const loginUrl = `${FRONTEND_URL}/login.html`;
+    const loginUrl = `${FRONTEND_URL}/login.html?redirect=account.html%3Ftab%3Dsecurite%26firstLogin%3D1`;
 
     const mailResult = await sendTransactionalEmail({
       to: user.email,
@@ -680,7 +735,7 @@ ${loginUrl}
 Identifiant : ${user.email}
 Mot de passe temporaire : ${password}
 
-Nous vous recommandons de modifier votre mot de passe après votre première connexion.
+Après connexion avec ce mot de passe temporaire, vous serez invité à choisir votre propre mot de passe.
 
 L’équipe Into The Shift`,
       html:
@@ -694,7 +749,7 @@ L’équipe Into The Shift`,
   </p>
   <p><strong>Identifiant :</strong> ${escapeHtml(user.email)}</p>
   <p><strong>Mot de passe temporaire :</strong> ${escapeHtml(password)}</p>
-  <p>Nous vous recommandons de modifier votre mot de passe après votre première connexion.</p>
+  <p>Après connexion avec ce mot de passe temporaire, vous serez invité à choisir votre propre mot de passe.</p>
   <p>L’équipe Into The Shift</p>
 </div>`
     });
@@ -733,7 +788,7 @@ app.patch("/api/admin/users/:id/role", auth, requireAdmin, async (req, res) => {
       `UPDATE users
        SET role = $1
        WHERE id = $2
-       RETURNING id, email, first_name, last_name, company_name, role, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, created_at`,
       [role, id]
     );
 
@@ -759,7 +814,7 @@ app.delete("/api/admin/users/:id", auth, requireAdmin, async (req, res) => {
     const userResult = await pool.query(
       `DELETE FROM users
        WHERE id = $1
-       RETURNING id, email, first_name, last_name, company_name, role, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, created_at`,
       [id]
     );
 
