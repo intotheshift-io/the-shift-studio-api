@@ -184,7 +184,8 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "emails-delete-debug-v2",
+    version: "profile-patch-v1",
+    hasPatchMeRoute: true,
     hasEmailSentResponse: true,
     hasDeleteUserRoute: true,
     smtpConfigured: mailerIsConfigured(),
@@ -392,6 +393,36 @@ app.get("/api/me", auth, async (req, res) => {
   );
 
   res.json({ user: formatUser(result.rows[0]) });
+});
+
+app.patch("/api/me", auth, async (req, res) => {
+  const { firstName, lastName, companyName } = req.body;
+
+  try {
+    const result = await pool.query(
+      `UPDATE users
+       SET first_name = $1,
+           last_name = $2,
+           company_name = $3
+       WHERE id = $4
+       RETURNING id, email, first_name, last_name, company_name, role, created_at`,
+      [
+        firstName || "",
+        lastName || "",
+        companyName || "",
+        req.user.id
+      ]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Utilisateur introuvable" });
+    }
+
+    res.json({ user: formatUser(result.rows[0]) });
+  } catch (err) {
+    console.error("Erreur mise à jour profil", err);
+    res.status(500).json({ error: "Erreur mise à jour profil" });
+  }
 });
 
 app.get("/api/projects", auth, async (req, res) => {
