@@ -145,6 +145,19 @@ async function initDb() {
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS organizations (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'client',
+      parent_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+      contact_name TEXT,
+      contact_email TEXT,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS projects (
       id SERIAL PRIMARY KEY,
       user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -154,6 +167,29 @@ async function initDb() {
       trial_ends_at TIMESTAMP DEFAULT NOW() + INTERVAL '14 days',
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS organization_id INTEGER REFERENCES organizations(id) ON DELETE SET NULL;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS campaigns (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+      organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+      title TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      start_date DATE,
+      end_date DATE,
+      created_at TIMESTAMP DEFAULT NOW()
     );
   `);
 }
@@ -180,6 +216,14 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+function requirePartnerOrAdmin(req, res, next) {
+  if (!req.user || !["partner", "admin"].includes(req.user.role)) {
+    return res.status(403).json({ error: "Accès réservé aux partenaires." });
+  }
+
+  next();
+}
+
 app.get("/", (req, res) => {
   res.json({ ok: true, app: "The Shift Studio API" });
 });
@@ -191,12 +235,13 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "profile-password-first-login-v2",
+    version: "partner-clients-api-v1",
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
     hasDeleteUserRoute: true,
     hasPasswordChangeRoute: true,
     hasMustChangePasswordFlag: true,
+    hasPartnerClientsApi: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -225,8 +270,8 @@ app.post("/api/register", async (req, res) => {
     const user = userResult.rows[0];
 
     const projectResult = await pool.query(
-      `INSERT INTO projects (user_id, title, data)
-       VALUES ($1, $2, $3)
+      `INSERT INTO projects (user_id, title, data, created_by)
+       VALUES ($1, $2, $3, $1)
        RETURNING *`,
       [user.id, "Mon premier customizer", {}]
     );
@@ -491,8 +536,8 @@ app.post("/api/projects", auth, async (req, res) => {
   const { title, data } = req.body;
 
   const result = await pool.query(
-    `INSERT INTO projects (user_id, title, data)
-     VALUES ($1, $2, $3)
+    `INSERT INTO projects (user_id, title, data, created_by)
+     VALUES ($1, $2, $3, $1)
      RETURNING *`,
     [req.user.id, title || "Nouveau projet", data || {}]
   );
@@ -519,6 +564,78 @@ app.put("/api/projects/:id", auth, async (req, res) => {
   }
 
   res.json({ project: result.rows[0] });
+});
+
+app.get("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) => {
+  try {
+    const params = [];
+    let whereClause = "o.type = 'client'";
+
+    if (req.user.role !== "admin") {
+      params.push(req.user.id);
+      whereClause += " AND o.created_by = $1";
+    }
+
+    const result = await pool.query(`
+      SELECT
+        o.id,
+        o.name,
+        o.contact_name,
+        o.contact_email,
+        o.created_at,
+        COUNT(DISTINCT p.id)::int AS ads_count,
+        COUNT(DISTINCT c.id) FILTER (WHERE c.status = 'active')::int AS active_campaigns_count,
+        COUNT(DISTINCT p.id) FILTER (WHERE p.status = 'draft')::int AS drafts_count,
+        COALESCE(
+          json_agg(
+            DISTINCT jsonb_build_object(
+              'id', p.id,
+              'title', p.title,
+              'status', p.status,
+              'updated_at', p.updated_at
+            )
+          ) FILTER (WHERE p.id IS NOT NULL),
+          '[]'
+        ) AS projects
+      FROM organizations o
+      LEFT JOIN projects p ON p.organization_id = o.id
+      LEFT JOIN campaigns c ON c.organization_id = o.id
+      WHERE ${whereClause}
+      GROUP BY o.id
+      ORDER BY o.created_at DESC
+    `, params);
+
+    res.json({ clients: result.rows });
+  } catch (err) {
+    console.error("GET /api/partner/clients", err);
+    res.status(500).json({ error: "Erreur chargement clients partenaires." });
+  }
+});
+
+app.post("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) => {
+  try {
+    const { name, contactName, contactEmail } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: "Le nom du client est obligatoire." });
+    }
+
+    const result = await pool.query(`
+      INSERT INTO organizations (name, type, contact_name, contact_email, created_by)
+      VALUES ($1, 'client', $2, $3, $4)
+      RETURNING *
+    `, [
+      name,
+      contactName || null,
+      contactEmail || null,
+      req.user.id
+    ]);
+
+    res.status(201).json({ client: result.rows[0] });
+  } catch (err) {
+    console.error("POST /api/partner/clients", err);
+    res.status(500).json({ error: "Erreur création client partenaire." });
+  }
 });
 
 app.get("/api/admin/summary", auth, requireAdmin, async (req, res) => {
