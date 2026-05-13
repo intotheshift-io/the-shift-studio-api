@@ -42,6 +42,9 @@ app.use(express.json({ limit: "5mb" }));
 function formatUser(user) {
   if (!user) return null;
 
+  const quota = Number(user.passations_quota || 0);
+  const used = Number(user.passations_used || 0);
+
   return {
     id: user.id,
     email: user.email,
@@ -50,7 +53,32 @@ function formatUser(user) {
     companyName: user.company_name || "",
     role: user.role || "client",
     mustChangePassword: user.must_change_password === true,
+    passationsQuota: quota,
+    passationsUsed: used,
+    passationsRemaining: Math.max(0, quota - used),
     createdAt: user.created_at || null
+  };
+}
+
+function formatOrganization(org) {
+  if (!org) return null;
+
+  const quota = Number(org.passations_quota || 0);
+  const used = Number(org.passations_used || 0);
+
+  return {
+    id: org.id,
+    name: org.name || "",
+    type: org.type || "client",
+    parentId: org.parent_id || null,
+    contactName: org.contact_name || "",
+    contactEmail: org.contact_email || "",
+    createdBy: org.created_by || null,
+    passationsPack: org.passations_pack || "",
+    passationsQuota: quota,
+    passationsUsed: used,
+    passationsRemaining: Math.max(0, quota - used),
+    createdAt: org.created_at || null
   };
 }
 
@@ -120,6 +148,8 @@ async function initDb() {
       reset_password_token_hash TEXT,
       reset_password_expires_at TIMESTAMP,
       must_change_password BOOLEAN DEFAULT false,
+      passations_quota INTEGER DEFAULT 0,
+      passations_used INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
@@ -145,6 +175,16 @@ async function initDb() {
   `);
 
   await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS passations_quota INTEGER DEFAULT 0;
+  `);
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS passations_used INTEGER DEFAULT 0;
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS organizations (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
@@ -153,8 +193,26 @@ async function initDb() {
       contact_name TEXT,
       contact_email TEXT,
       created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      passations_pack TEXT,
+      passations_quota INTEGER DEFAULT 0,
+      passations_used INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT NOW()
     );
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS passations_pack TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS passations_quota INTEGER DEFAULT 0;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS passations_used INTEGER DEFAULT 0;
   `);
 
   await pool.query(`
@@ -235,13 +293,14 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "partner-clients-api-v1",
+    version: "passations-quota-admin-v1",
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
     hasDeleteUserRoute: true,
     hasPasswordChangeRoute: true,
     hasMustChangePasswordFlag: true,
     hasPartnerClientsApi: true,
+    hasPassationsQuota: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -263,7 +322,7 @@ app.post("/api/register", async (req, res) => {
     const userResult = await pool.query(
       `INSERT INTO users (email, password_hash, first_name, last_name, company_name, role)
        VALUES ($1, $2, $3, $4, $5, 'client')
-       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
       [email.toLowerCase(), passwordHash, firstName || "", lastName || "", companyName || ""]
     );
 
@@ -441,7 +500,7 @@ app.post("/api/reset-password", async (req, res) => {
 
 app.get("/api/me", auth, async (req, res) => {
   const result = await pool.query(
-    `SELECT id, email, first_name, last_name, company_name, role, must_change_password, created_at
+    `SELECT id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at
      FROM users
      WHERE id = $1`,
     [req.user.id]
@@ -460,7 +519,7 @@ app.patch("/api/me", auth, async (req, res) => {
            last_name = $2,
            company_name = $3
        WHERE id = $4
-       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
       [
         firstName || "",
         lastName || "",
@@ -512,7 +571,7 @@ app.patch("/api/me/password", auth, async (req, res) => {
            reset_password_token_hash = NULL,
            reset_password_expires_at = NULL
        WHERE id = $2
-       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
       [passwordHash, req.user.id]
     );
 
@@ -533,13 +592,13 @@ app.get("/api/projects", auth, async (req, res) => {
 });
 
 app.post("/api/projects", auth, async (req, res) => {
-  const { title, data } = req.body;
+  const { title, data, organizationId } = req.body;
 
   const result = await pool.query(
-    `INSERT INTO projects (user_id, title, data, created_by)
-     VALUES ($1, $2, $3, $1)
+    `INSERT INTO projects (user_id, title, data, created_by, organization_id)
+     VALUES ($1, $2, $3, $1, $4)
      RETURNING *`,
-    [req.user.id, title || "Nouveau projet", data || {}]
+    [req.user.id, title || "Nouveau projet", data || {}, organizationId || null]
   );
 
   res.json({ project: result.rows[0] });
@@ -547,16 +606,17 @@ app.post("/api/projects", auth, async (req, res) => {
 
 app.put("/api/projects/:id", auth, async (req, res) => {
   const { id } = req.params;
-  const { title, data } = req.body;
+  const { title, data, organizationId } = req.body;
 
   const result = await pool.query(
     `UPDATE projects
      SET title = COALESCE($1, title),
          data = COALESCE($2, data),
+         organization_id = COALESCE($3, organization_id),
          updated_at = NOW()
-     WHERE id = $3 AND user_id = $4
+     WHERE id = $4 AND user_id = $5
      RETURNING *`,
-    [title || null, data || null, id, req.user.id]
+    [title || null, data || null, organizationId || null, id, req.user.id]
   );
 
   if (!result.rows[0]) {
@@ -564,6 +624,22 @@ app.put("/api/projects/:id", auth, async (req, res) => {
   }
 
   res.json({ project: result.rows[0] });
+});
+
+app.get("/api/partner/me", auth, requirePartnerOrAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at
+       FROM users
+       WHERE id = $1`,
+      [req.user.id]
+    );
+
+    res.json({ partner: formatUser(result.rows[0]) });
+  } catch (err) {
+    console.error("GET /api/partner/me", err);
+    res.status(500).json({ error: "Erreur chargement quota partenaire." });
+  }
 });
 
 app.get("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) => {
@@ -583,6 +659,9 @@ app.get("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =>
         o.contact_name,
         o.contact_email,
         o.created_at,
+        o.passations_pack,
+        o.passations_quota,
+        o.passations_used,
         COUNT(DISTINCT p.id)::int AS ads_count,
         COUNT(DISTINCT c.id) FILTER (WHERE c.status = 'active')::int AS active_campaigns_count,
         COUNT(DISTINCT p.id) FILTER (WHERE p.status = 'draft')::int AS drafts_count,
@@ -631,7 +710,7 @@ app.post("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =
       req.user.id
     ]);
 
-    res.status(201).json({ client: result.rows[0] });
+    res.status(201).json({ client: formatOrganization(result.rows[0]) });
   } catch (err) {
     console.error("POST /api/partner/clients", err);
     res.status(500).json({ error: "Erreur création client partenaire." });
@@ -639,9 +718,10 @@ app.post("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =
 });
 
 app.get("/api/admin/summary", auth, requireAdmin, async (req, res) => {
-  const [users, clients, projects, submitted] = await Promise.all([
+  const [users, clients, partners, projects, submitted, orgs] = await Promise.all([
     pool.query(`SELECT COUNT(*)::int AS count FROM users`),
     pool.query(`SELECT COUNT(*)::int AS count FROM users WHERE COALESCE(role, 'client') = 'client'`),
+    pool.query(`SELECT COUNT(*)::int AS count FROM users WHERE COALESCE(role, '') = 'partner'`),
     pool.query(`SELECT COUNT(*)::int AS count FROM projects`),
     pool.query(`
       SELECT COUNT(*)::int AS count
@@ -649,12 +729,15 @@ app.get("/api/admin/summary", auth, requireAdmin, async (req, res) => {
       WHERE status ILIKE '%transmis%'
          OR status ILIKE '%submitted%'
          OR COALESCE((data->>'configTransmise')::boolean, false) = true
-    `)
+    `),
+    pool.query(`SELECT COUNT(*)::int AS count FROM organizations WHERE type = 'client'`)
   ]);
 
   res.json({
     usersCount: users.rows[0]?.count || 0,
     clientsCount: clients.rows[0]?.count || 0,
+    partnersCount: partners.rows[0]?.count || 0,
+    organizationsCount: orgs.rows[0]?.count || 0,
     projectsCount: projects.rows[0]?.count || 0,
     sentConfigs: submitted.rows[0]?.count || 0
   });
@@ -670,6 +753,8 @@ app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
       u.company_name,
       u.role,
       u.must_change_password,
+      u.passations_quota,
+      u.passations_used,
       u.created_at,
       COUNT(p.id)::int AS projects_count,
       MAX(p.updated_at) AS last_project_update
@@ -680,20 +765,124 @@ app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
   `);
 
   res.json({
-    clients: result.rows.map((row) => ({
-      id: row.id,
-      email: row.email,
-      firstName: row.first_name || "",
-      lastName: row.last_name || "",
-      companyName: row.company_name || "",
-      role: row.role || "client",
-      mustChangePassword: row.must_change_password === true,
-      createdAt: row.created_at,
-      projectsCount: row.projects_count,
-      lastProjectUpdate: row.last_project_update,
-      status: "actif"
-    }))
+    clients: result.rows.map((row) => {
+      const quota = Number(row.passations_quota || 0);
+      const used = Number(row.passations_used || 0);
+
+      return {
+        id: row.id,
+        email: row.email,
+        firstName: row.first_name || "",
+        lastName: row.last_name || "",
+        companyName: row.company_name || "",
+        role: row.role || "client",
+        mustChangePassword: row.must_change_password === true,
+        passationsQuota: quota,
+        passationsUsed: used,
+        passationsRemaining: Math.max(0, quota - used),
+        createdAt: row.created_at,
+        projectsCount: row.projects_count,
+        lastProjectUpdate: row.last_project_update,
+        status: "actif"
+      };
+    })
   });
+});
+
+app.get("/api/admin/organizations", auth, requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        o.*,
+        u.email AS owner_email,
+        u.first_name AS owner_first_name,
+        u.last_name AS owner_last_name,
+        u.company_name AS owner_company_name,
+        COUNT(DISTINCT p.id)::int AS projects_count
+      FROM organizations o
+      LEFT JOIN users u ON u.id = o.created_by
+      LEFT JOIN projects p ON p.organization_id = o.id
+      WHERE o.type = 'client'
+      GROUP BY o.id, u.id
+      ORDER BY o.created_at DESC
+    `);
+
+    res.json({
+      organizations: result.rows.map((row) => ({
+        ...formatOrganization(row),
+        ownerEmail: row.owner_email || "",
+        ownerName:
+          `${row.owner_first_name || ""} ${row.owner_last_name || ""}`.trim() ||
+          row.owner_company_name ||
+          row.owner_email ||
+          "—",
+        projectsCount: Number(row.projects_count || 0)
+      }))
+    });
+  } catch (err) {
+    console.error("GET /api/admin/organizations", err);
+    res.status(500).json({ error: "Erreur chargement clients finaux." });
+  }
+});
+
+app.patch("/api/admin/users/:id/passations", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { passationsQuota, passationsUsed } = req.body;
+
+  try {
+    const result = await pool.query(
+      `UPDATE users
+       SET passations_quota = $1,
+           passations_used = $2
+       WHERE id = $3
+       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
+      [
+        Number(passationsQuota || 0),
+        Number(passationsUsed || 0),
+        id
+      ]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Utilisateur introuvable" });
+    }
+
+    res.json({ user: formatUser(result.rows[0]) });
+  } catch (err) {
+    console.error("Erreur mise à jour passations utilisateur", err);
+    res.status(500).json({ error: "Erreur mise à jour passations" });
+  }
+});
+
+app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { passationsPack, passationsQuota, passationsUsed } = req.body;
+
+  try {
+    const result = await pool.query(
+      `UPDATE organizations
+       SET passations_pack = $1,
+           passations_quota = $2,
+           passations_used = $3
+       WHERE id = $4
+       RETURNING *`,
+      [
+        passationsPack || null,
+        Number(passationsQuota || 0),
+        Number(passationsUsed || 0),
+        id
+      ]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Organisation introuvable" });
+    }
+
+    res.json({ organization: formatOrganization(result.rows[0]) });
+  } catch (err) {
+    console.error("Erreur mise à jour passations organisation", err);
+    res.status(500).json({ error: "Erreur mise à jour passations client final" });
+  }
 });
 
 app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
@@ -706,6 +895,11 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
       p.trial_ends_at,
       p.created_at,
       p.updated_at,
+      p.organization_id,
+      o.name AS organization_name,
+      o.passations_pack AS organization_passations_pack,
+      o.passations_quota AS organization_passations_quota,
+      o.passations_used AS organization_passations_used,
       u.id AS user_id,
       u.email,
       u.first_name,
@@ -713,6 +907,7 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
       u.company_name
     FROM projects p
     LEFT JOIN users u ON u.id = p.user_id
+    LEFT JOIN organizations o ON o.id = p.organization_id
     ORDER BY p.updated_at DESC
   `);
 
@@ -731,6 +926,7 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
           "Autodiag sans titre",
         status: row.status || data.status || "brouillon",
         pack:
+          row.organization_passations_pack ||
           data.pack ||
           data.packChoisi ||
           data.selectedPack ||
@@ -742,10 +938,21 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
           data.submitted ||
           false,
         data,
+        organizationId: row.organization_id,
+        organizationName: row.organization_name || "",
+        organizationPassationsPack: row.organization_passations_pack || "",
+        organizationPassationsQuota: Number(row.organization_passations_quota || 0),
+        organizationPassationsUsed: Number(row.organization_passations_used || 0),
+        organizationPassationsRemaining: Math.max(
+          0,
+          Number(row.organization_passations_quota || 0) -
+          Number(row.organization_passations_used || 0)
+        ),
         trialEndsAt: row.trial_ends_at,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         clientName:
+          row.organization_name ||
           row.company_name ||
           `${row.first_name || ""} ${row.last_name || ""}`.trim() ||
           row.email ||
@@ -824,7 +1031,7 @@ app.post("/api/admin/users", auth, requireAdmin, async (req, res) => {
     const userResult = await pool.query(
       `INSERT INTO users (email, password_hash, first_name, last_name, company_name, role, must_change_password)
        VALUES ($1, $2, $3, $4, $5, $6, true)
-       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
       [
         email.toLowerCase(),
         passwordHash,
@@ -905,7 +1112,7 @@ app.patch("/api/admin/users/:id/role", auth, requireAdmin, async (req, res) => {
       `UPDATE users
        SET role = $1
        WHERE id = $2
-       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
       [role, id]
     );
 
@@ -931,7 +1138,7 @@ app.delete("/api/admin/users/:id", auth, requireAdmin, async (req, res) => {
     const userResult = await pool.query(
       `DELETE FROM users
        WHERE id = $1
-       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
       [id]
     );
 
