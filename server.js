@@ -175,7 +175,6 @@ async function initDb() {
   `);
 
   await pool.query(`
-<<<<<<< HEAD
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS passations_quota INTEGER DEFAULT 0;
   `);
@@ -186,8 +185,6 @@ async function initDb() {
   `);
 
   await pool.query(`
-=======
->>>>>>> 50bf095 (Add partner clients API)
     CREATE TABLE IF NOT EXISTS organizations (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
@@ -196,18 +193,14 @@ async function initDb() {
       contact_name TEXT,
       contact_email TEXT,
       created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-<<<<<<< HEAD
       passations_pack TEXT,
       passations_quota INTEGER DEFAULT 0,
       passations_used INTEGER DEFAULT 0,
-=======
->>>>>>> 50bf095 (Add partner clients API)
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
 
   await pool.query(`
-<<<<<<< HEAD
     ALTER TABLE organizations
     ADD COLUMN IF NOT EXISTS passations_pack TEXT;
   `);
@@ -223,8 +216,6 @@ async function initDb() {
   `);
 
   await pool.query(`
-=======
->>>>>>> 50bf095 (Add partner clients API)
     CREATE TABLE IF NOT EXISTS projects (
       id SERIAL PRIMARY KEY,
       user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -605,13 +596,8 @@ app.post("/api/projects", auth, async (req, res) => {
   const { title, data, organizationId } = req.body;
 
   const result = await pool.query(
-<<<<<<< HEAD
     `INSERT INTO projects (user_id, title, data, created_by, organization_id)
      VALUES ($1, $2, $3, $1, $4)
-=======
-    `INSERT INTO projects (user_id, title, data, created_by)
-     VALUES ($1, $2, $3, $1)
->>>>>>> 50bf095 (Add partner clients API)
      RETURNING *`,
     [req.user.id, title || "Nouveau projet", data || {}, organizationId || null]
   );
@@ -641,7 +627,6 @@ app.put("/api/projects/:id", auth, async (req, res) => {
   res.json({ project: result.rows[0] });
 });
 
-<<<<<<< HEAD
 app.get("/api/partner/me", auth, requirePartnerOrAdmin, async (req, res) => {
   try {
     const result = await pool.query(
@@ -658,8 +643,6 @@ app.get("/api/partner/me", auth, requirePartnerOrAdmin, async (req, res) => {
   }
 });
 
-=======
->>>>>>> 50bf095 (Add partner clients API)
 app.get("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) => {
   try {
     const params = [];
@@ -677,12 +660,9 @@ app.get("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =>
         o.contact_name,
         o.contact_email,
         o.created_at,
-<<<<<<< HEAD
         o.passations_pack,
         o.passations_quota,
         o.passations_used,
-=======
->>>>>>> 50bf095 (Add partner clients API)
         COUNT(DISTINCT p.id)::int AS ads_count,
         COUNT(DISTINCT c.id) FILTER (WHERE c.status = 'active')::int AS active_campaigns_count,
         COUNT(DISTINCT p.id) FILTER (WHERE p.status = 'draft')::int AS drafts_count,
@@ -731,11 +711,7 @@ app.post("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =
       req.user.id
     ]);
 
-<<<<<<< HEAD
     res.status(201).json({ client: formatOrganization(result.rows[0]) });
-=======
-    res.status(201).json({ client: result.rows[0] });
->>>>>>> 50bf095 (Add partner clients API)
   } catch (err) {
     console.error("POST /api/partner/clients", err);
     res.status(500).json({ error: "Erreur création client partenaire." });
