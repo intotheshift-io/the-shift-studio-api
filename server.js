@@ -302,21 +302,15 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-<<<<<<< HEAD
-    version: "passations-quota-admin-v1",
-=======
-    version: "partner-clients-api-v1",
->>>>>>> 50bf095 (Add partner clients API)
+    version: "admin-company-route-v2",
+    hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
     hasDeleteUserRoute: true,
     hasPasswordChangeRoute: true,
     hasMustChangePasswordFlag: true,
     hasPartnerClientsApi: true,
-<<<<<<< HEAD
     hasPassationsQuota: true,
-=======
->>>>>>> 50bf095 (Add partner clients API)
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
