@@ -854,6 +854,33 @@ app.patch("/api/admin/users/:id/passations", auth, requireAdmin, async (req, res
   }
 });
 
+app.patch("/api/admin/users/:id/company", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { companyName } = req.body;
+
+  try {
+    const result = await pool.query(
+      `UPDATE users
+       SET company_name = $1
+       WHERE id = $2
+       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
+      [
+        companyName || "",
+        id
+      ]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Utilisateur introuvable" });
+    }
+
+    res.json({ user: formatUser(result.rows[0]) });
+  } catch (err) {
+    console.error("Erreur mise à jour entreprise utilisateur", err);
+    res.status(500).json({ error: "Erreur mise à jour entreprise" });
+  }
+});
+
 app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
   const { passationsPack, passationsQuota, passationsUsed } = req.body;
