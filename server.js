@@ -593,13 +593,29 @@ app.get("/api/projects", auth, async (req, res) => {
 });
 
 app.post("/api/projects", auth, async (req, res) => {
-  const { title, data, organizationId } = req.body;
+  const { title, data, organizationId, status } = req.body;
+
+  const configSent =
+    data?.configTransmise === true ||
+    data?.config_transmise === true ||
+    data?.submitted === true ||
+    data?.payload?.configTransmise === true ||
+    data?.payload?.config_transmise === true ||
+    data?.payload?.submitted === true;
+
+  const finalStatus = status || (configSent ? "sent" : "draft");
 
   const result = await pool.query(
-    `INSERT INTO projects (user_id, title, data, created_by, organization_id)
-     VALUES ($1, $2, $3, $1, $4)
+    `INSERT INTO projects (user_id, title, status, data, created_by, organization_id)
+     VALUES ($1, $2, $3, $4, $1, $5)
      RETURNING *`,
-    [req.user.id, title || "Nouveau projet", data || {}, organizationId || null]
+    [
+      req.user.id,
+      title || "Nouveau projet",
+      finalStatus,
+      data || {},
+      organizationId || null
+    ]
   );
 
   res.json({ project: result.rows[0] });
