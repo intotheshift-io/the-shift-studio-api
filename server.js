@@ -607,17 +607,47 @@ app.post("/api/projects", auth, async (req, res) => {
 
 app.put("/api/projects/:id", auth, async (req, res) => {
   const { id } = req.params;
-  const { title, data, organizationId } = req.body;
+
+  const {
+    title,
+    data,
+    organizationId,
+    status
+  } = req.body;
+
+  let finalStatus = status || null;
+
+  const configSent =
+    data?.configTransmise === true ||
+    data?.config_transmise === true ||
+    data?.submitted === true;
+
+  if (!finalStatus) {
+
+    if (configSent) {
+      finalStatus = "sent";
+    } else {
+      finalStatus = "draft";
+    }
+  }
 
   const result = await pool.query(
     `UPDATE projects
      SET title = COALESCE($1, title),
          data = COALESCE($2, data),
          organization_id = COALESCE($3, organization_id),
+         status = COALESCE($4, status),
          updated_at = NOW()
-     WHERE id = $4 AND user_id = $5
+     WHERE id = $5 AND user_id = $6
      RETURNING *`,
-    [title || null, data || null, organizationId || null, id, req.user.id]
+    [
+      title || null,
+      data || null,
+      organizationId || null,
+      finalStatus,
+      id,
+      req.user.id
+    ]
   );
 
   if (!result.rows[0]) {
