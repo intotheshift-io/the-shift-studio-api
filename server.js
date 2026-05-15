@@ -1027,7 +1027,39 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
     })
   });
 });
+app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
 
+  const allowedStatuses = ["draft", "sent", "published"];
+
+  if (!allowedStatuses.includes(status)) {
+    return res.status(400).json({ error: "Statut invalide" });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE projects
+       SET status = $1,
+           updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [status, id]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    res.json({
+      ok: true,
+      project: result.rows[0]
+    });
+  } catch (err) {
+    console.error("Erreur mise à jour statut projet admin", err);
+    res.status(500).json({ error: "Erreur mise à jour statut projet" });
+  }
+});
 app.post("/api/admin/test-email", auth, requireAdmin, async (req, res) => {
   const { email } = req.body;
 
