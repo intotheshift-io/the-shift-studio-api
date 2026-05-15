@@ -657,13 +657,6 @@ app.put("/api/projects/:id", auth, async (req, res) => {
   res.json({ project: result.rows[0] });
 });
 
-  if (!result.rows[0]) {
-    return res.status(404).json({ error: "Projet introuvable" });
-  }
-
-  res.json({ project: result.rows[0] });
-});
-
 app.get("/api/partner/me", auth, requirePartnerOrAdmin, async (req, res) => {
   try {
     const result = await pool.query(
