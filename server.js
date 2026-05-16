@@ -845,6 +845,7 @@ app.get("/api/admin/summary", auth, requireAdmin, async (req, res) => {
          OR status ILIKE '%submitted%'
          OR status = 'sent'
          OR status = 'published'
+         OR status = 'results'
          OR COALESCE((data->>'configTransmise')::boolean, false) = true
     `),
     pool.query(`SELECT COUNT(*)::int AS count FROM organizations WHERE type = 'client'`)
