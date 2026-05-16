@@ -237,6 +237,20 @@ async function initDb() {
     ALTER TABLE projects
     ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
   `);
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS share_url TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS results_url TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS published_at TIMESTAMP;
+  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS campaigns (
@@ -245,7 +259,7 @@ async function initDb() {
       organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
       title TEXT,
       status TEXT NOT NULL DEFAULT 'draft',
-      start_date DATE,
+      start_date DATE,updatedAt: row.updated_at,
       end_date DATE,
       created_at TIMESTAMP DEFAULT NOW()
     );
@@ -1025,6 +1039,9 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
       p.trial_ends_at,
       p.created_at,
       p.updated_at,
+      p.share_url,
+      p.results_url,
+      p.published_at,
       p.organization_id,
       o.name AS organization_name,
       o.passations_pack AS organization_passations_pack,
@@ -1081,6 +1098,9 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
         trialEndsAt: row.trial_ends_at,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        shareUrl: row.share_url || "",
+        resultsUrl: row.results_url || "",
+        publishedAt: row.published_at || null,
         clientName:
           row.organization_name ||
           row.company_name ||
