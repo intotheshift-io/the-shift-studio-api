@@ -237,20 +237,6 @@ async function initDb() {
     ALTER TABLE projects
     ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
   `);
-  await pool.query(`
-    ALTER TABLE projects
-    ADD COLUMN IF NOT EXISTS share_url TEXT;
-  `);
-
-  await pool.query(`
-    ALTER TABLE projects
-    ADD COLUMN IF NOT EXISTS results_url TEXT;
-  `);
-
-  await pool.query(`
-    ALTER TABLE projects
-    ADD COLUMN IF NOT EXISTS published_at TIMESTAMP;
-  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS campaigns (
@@ -348,7 +334,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "admin-company-route-v3-organization-autolink",
+    version: "admin-publication-urls-v2-creator-fields",
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
@@ -358,6 +344,8 @@ app.get("/debug-version", (req, res) => {
     hasPartnerClientsApi: true,
     hasPassationsQuota: true,
     hasProjectOrganizationAutolink: true,
+    hasProjectPublicationUrls: true,
+    hasCreatorFields: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -643,11 +631,36 @@ app.patch("/api/me/password", auth, async (req, res) => {
 
 app.get("/api/projects", auth, async (req, res) => {
   const result = await pool.query(
-    `SELECT * FROM projects WHERE user_id = $1 ORDER BY updated_at DESC`,
+    `SELECT
+       p.*,
+       o.name AS organization_name,
+       o.passations_pack AS organization_passations_pack,
+       o.passations_quota AS organization_passations_quota,
+       o.passations_used AS organization_passations_used
+     FROM projects p
+     LEFT JOIN organizations o ON o.id = p.organization_id
+     WHERE p.user_id = $1
+     ORDER BY p.updated_at DESC`,
     [req.user.id]
   );
 
-  res.json({ projects: result.rows });
+  res.json({
+    projects: result.rows.map((row) => ({
+      ...row,
+      organizationName: row.organization_name || "",
+      organizationPassationsPack: row.organization_passations_pack || "",
+      organizationPassationsQuota: Number(row.organization_passations_quota || 0),
+      organizationPassationsUsed: Number(row.organization_passations_used || 0),
+      organizationPassationsRemaining: Math.max(
+        0,
+        Number(row.organization_passations_quota || 0) -
+        Number(row.organization_passations_used || 0)
+      ),
+      shareUrl: row.share_url || "",
+      resultsUrl: row.results_url || "",
+      publishedAt: row.published_at || null
+    }))
+  });
 });
 
 app.post("/api/projects", auth, async (req, res) => {
@@ -786,7 +799,10 @@ app.get("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =>
               'id', p.id,
               'title', p.title,
               'status', p.status,
-              'updated_at', p.updated_at
+              'updated_at', p.updated_at,
+              'share_url', p.share_url,
+              'results_url', p.results_url,
+              'published_at', p.published_at
             )
           ) FILTER (WHERE p.id IS NOT NULL),
           '[]'
@@ -833,7 +849,7 @@ app.post("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =
 });
 
 app.get("/api/admin/summary", auth, requireAdmin, async (req, res) => {
-  const [users, clients, partners, projects, submitted, orgs] = await Promise.all([
+  const [users, clients, partners, projects, submitted, orgs, draftProjects, publishedProjects, resultsProjects, waitingPublication, withoutResults] = await Promise.all([
     pool.query(`SELECT COUNT(*)::int AS count FROM users`),
     pool.query(`SELECT COUNT(*)::int AS count FROM users WHERE COALESCE(role, 'client') = 'client'`),
     pool.query(`SELECT COUNT(*)::int AS count FROM users WHERE COALESCE(role, '') = 'partner'`),
@@ -848,7 +864,12 @@ app.get("/api/admin/summary", auth, requireAdmin, async (req, res) => {
          OR status = 'results'
          OR COALESCE((data->>'configTransmise')::boolean, false) = true
     `),
-    pool.query(`SELECT COUNT(*)::int AS count FROM organizations WHERE type = 'client'`)
+    pool.query(`SELECT COUNT(*)::int AS count FROM organizations WHERE type = 'client'`),
+    pool.query(`SELECT COUNT(*)::int AS count FROM projects WHERE COALESCE(status, 'draft') = 'draft'`),
+    pool.query(`SELECT COUNT(*)::int AS count FROM projects WHERE status = 'published'`),
+    pool.query(`SELECT COUNT(*)::int AS count FROM projects WHERE status = 'results' OR COALESCE(results_url, '') <> ''`),
+    pool.query(`SELECT COUNT(*)::int AS count FROM projects WHERE status = 'sent'`),
+    pool.query(`SELECT COUNT(*)::int AS count FROM projects WHERE status = 'published' AND COALESCE(results_url, '') = ''`)
   ]);
 
   res.json({
@@ -857,7 +878,12 @@ app.get("/api/admin/summary", auth, requireAdmin, async (req, res) => {
     partnersCount: partners.rows[0]?.count || 0,
     organizationsCount: orgs.rows[0]?.count || 0,
     projectsCount: projects.rows[0]?.count || 0,
-    sentConfigs: submitted.rows[0]?.count || 0
+    sentConfigs: submitted.rows[0]?.count || 0,
+    draftProjects: draftProjects.rows[0]?.count || 0,
+    publishedProjects: publishedProjects.rows[0]?.count || 0,
+    resultsProjects: resultsProjects.rows[0]?.count || 0,
+    waitingPublication: waitingPublication.rows[0]?.count || 0,
+    publishedWithoutResults: withoutResults.rows[0]?.count || 0
   });
 });
 
@@ -1040,9 +1066,6 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
       p.trial_ends_at,
       p.created_at,
       p.updated_at,
-      p.share_url,
-      p.results_url,
-      p.published_at,
       p.organization_id,
       o.name AS organization_name,
       o.passations_pack AS organization_passations_pack,
@@ -1052,10 +1075,24 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
       u.email,
       u.first_name,
       u.last_name,
-      u.company_name
+      u.company_name,
+      o.created_by AS organization_created_by,
+      creator.id AS creator_id,
+      creator.email AS creator_email,
+      creator.first_name AS creator_first_name,
+      creator.last_name AS creator_last_name,
+      creator.company_name AS creator_company_name,
+      creator.role AS creator_role,
+      partner.id AS partner_id,
+      partner.email AS partner_email,
+      partner.first_name AS partner_first_name,
+      partner.last_name AS partner_last_name,
+      partner.company_name AS partner_company_name
     FROM projects p
     LEFT JOIN users u ON u.id = p.user_id
     LEFT JOIN organizations o ON o.id = p.organization_id
+    LEFT JOIN users creator ON creator.id = COALESCE(p.created_by, p.user_id)
+    LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
     ORDER BY p.updated_at DESC
   `);
 
@@ -1099,9 +1136,6 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
         trialEndsAt: row.trial_ends_at,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
-        shareUrl: row.share_url || "",
-        resultsUrl: row.results_url || "",
-        publishedAt: row.published_at || null,
         clientName:
           row.organization_name ||
           row.company_name ||
@@ -1109,6 +1143,22 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
           row.email ||
           "—",
         clientEmail: row.email || "",
+        creatorId: row.creator_id || row.user_id || null,
+        creatorEmail: row.creator_email || row.email || "",
+        creatorName:
+          `${row.creator_first_name || ""} ${row.creator_last_name || ""}`.trim() ||
+          row.creator_company_name ||
+          row.creator_email ||
+          "—",
+        creatorCompanyName: row.creator_company_name || row.company_name || "",
+        creatorRole: row.creator_role || "",
+        partnerId: row.partner_id || null,
+        partnerEmail: row.partner_email || "",
+        partnerName:
+          row.partner_company_name ||
+          `${row.partner_first_name || ""} ${row.partner_last_name || ""}`.trim() ||
+          row.partner_email ||
+          "",
         client: {
           id: row.user_id,
           email: row.email,
@@ -1125,7 +1175,7 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
   const { id } = req.params;
   const { status } = req.body;
 
-  const allowedStatuses = ["draft", "sent", "published"];
+  const allowedStatuses = ["draft", "sent", "published", "results"];
 
   if (!allowedStatuses.includes(status)) {
     return res.status(400).json({ error: "Statut invalide" });
@@ -1154,14 +1204,21 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
     res.status(500).json({ error: "Erreur mise à jour statut projet" });
   }
 });
+
+
 app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
 
   const {
     status,
     shareUrl,
-    resultsUrl
+    resultsUrl,
+    share_url,
+    results_url
   } = req.body;
+
+  const finalShareUrl = shareUrl || share_url || "";
+  const finalResultsUrl = resultsUrl || results_url || "";
 
   const allowedStatuses = [
     "draft",
@@ -1175,9 +1232,8 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
   }
 
   try {
-
     const finalStatus =
-      resultsUrl
+      finalResultsUrl
         ? "results"
         : (status || "published");
 
@@ -1199,8 +1255,8 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
       `,
       [
         finalStatus,
-        shareUrl || null,
-        resultsUrl || null,
+        finalShareUrl || null,
+        finalResultsUrl || null,
         id
       ]
     );
