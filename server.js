@@ -259,7 +259,7 @@ async function initDb() {
       organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
       title TEXT,
       status TEXT NOT NULL DEFAULT 'draft',
-      start_date DATE,updatedAt: row.updated_at,
+      start_date DATE,
       end_date DATE,
       created_at TIMESTAMP DEFAULT NOW()
     );
@@ -1151,6 +1151,71 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
   } catch (err) {
     console.error("Erreur mise à jour statut projet admin", err);
     res.status(500).json({ error: "Erreur mise à jour statut projet" });
+  }
+});
+app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+
+  const {
+    status,
+    shareUrl,
+    resultsUrl
+  } = req.body;
+
+  const allowedStatuses = [
+    "draft",
+    "sent",
+    "published",
+    "results"
+  ];
+
+  if (status && !allowedStatuses.includes(status)) {
+    return res.status(400).json({ error: "Statut invalide" });
+  }
+
+  try {
+
+    const finalStatus =
+      resultsUrl
+        ? "results"
+        : (status || "published");
+
+    const result = await pool.query(
+      `
+      UPDATE projects
+      SET
+        status = $1,
+        share_url = $2,
+        results_url = $3,
+        published_at = CASE
+          WHEN $1 IN ('published','results')
+          THEN NOW()
+          ELSE published_at
+        END,
+        updated_at = NOW()
+      WHERE id = $4
+      RETURNING *
+      `,
+      [
+        finalStatus,
+        shareUrl || null,
+        resultsUrl || null,
+        id
+      ]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    res.json({
+      ok: true,
+      project: result.rows[0]
+    });
+
+  } catch (err) {
+    console.error("Erreur publication projet", err);
+    res.status(500).json({ error: "Erreur publication projet" });
   }
 });
 
