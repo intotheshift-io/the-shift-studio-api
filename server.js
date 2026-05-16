@@ -282,6 +282,47 @@ function requirePartnerOrAdmin(req, res, next) {
   next();
 }
 
+async function ensureDirectClientOrganization(userId) {
+  const userResult = await pool.query(
+    `SELECT id, email, first_name, last_name, company_name
+     FROM users
+     WHERE id = $1`,
+    [userId]
+  );
+
+  const user = userResult.rows[0];
+  if (!user) return null;
+
+  const companyName = String(user.company_name || "").trim();
+  if (!companyName) return null;
+
+  const existing = await pool.query(
+    `SELECT id
+     FROM organizations
+     WHERE type = 'client'
+       AND created_by = $1
+       AND LOWER(name) = LOWER($2)
+     LIMIT 1`,
+    [userId, companyName]
+  );
+
+  if (existing.rows[0]) return existing.rows[0].id;
+
+  const created = await pool.query(
+    `INSERT INTO organizations (name, type, contact_name, contact_email, created_by)
+     VALUES ($1, 'client', $2, $3, $4)
+     RETURNING id`,
+    [
+      companyName,
+      `${user.first_name || ""} ${user.last_name || ""}`.trim(),
+      user.email,
+      userId
+    ]
+  );
+
+  return created.rows[0].id;
+}
+
 app.get("/", (req, res) => {
   res.json({ ok: true, app: "The Shift Studio API" });
 });
@@ -293,7 +334,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "admin-company-route-v2",
+    version: "admin-company-route-v3-organization-autolink",
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
@@ -302,6 +343,7 @@ app.get("/debug-version", (req, res) => {
     hasMustChangePasswordFlag: true,
     hasPartnerClientsApi: true,
     hasPassationsQuota: true,
+    hasProjectOrganizationAutolink: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -329,11 +371,13 @@ app.post("/api/register", async (req, res) => {
 
     const user = userResult.rows[0];
 
+    const organizationId = await ensureDirectClientOrganization(user.id);
+
     const projectResult = await pool.query(
-      `INSERT INTO projects (user_id, title, data, created_by)
-       VALUES ($1, $2, $3, $1)
+      `INSERT INTO projects (user_id, title, data, created_by, organization_id)
+       VALUES ($1, $2, $3, $1, $4)
        RETURNING *`,
-      [user.id, "Mon premier customizer", {}]
+      [user.id, "Mon premier customizer", {}, organizationId || null]
     );
 
     const token = jwt.sign(
@@ -605,6 +649,12 @@ app.post("/api/projects", auth, async (req, res) => {
 
   const finalStatus = status || (configSent ? "sent" : "draft");
 
+  let finalOrganizationId = organizationId || null;
+
+  if (!finalOrganizationId) {
+    finalOrganizationId = await ensureDirectClientOrganization(req.user.id);
+  }
+
   const result = await pool.query(
     `INSERT INTO projects (user_id, title, status, data, created_by, organization_id)
      VALUES ($1, $2, $3, $4, $1, $5)
@@ -614,7 +664,7 @@ app.post("/api/projects", auth, async (req, res) => {
       title || "Nouveau projet",
       finalStatus,
       data || {},
-      organizationId || null
+      finalOrganizationId || null
     ]
   );
 
@@ -632,6 +682,7 @@ app.put("/api/projects/:id", auth, async (req, res) => {
   } = req.body;
 
   let finalStatus = status || null;
+  let finalOrganizationId = organizationId || null;
 
   const configSent =
     data?.configTransmise === true ||
@@ -639,12 +690,15 @@ app.put("/api/projects/:id", auth, async (req, res) => {
     data?.submitted === true;
 
   if (!finalStatus) {
-
     if (configSent) {
       finalStatus = "sent";
     } else {
       finalStatus = "draft";
     }
+  }
+
+  if (!finalOrganizationId) {
+    finalOrganizationId = await ensureDirectClientOrganization(req.user.id);
   }
 
   const result = await pool.query(
@@ -659,7 +713,7 @@ app.put("/api/projects/:id", auth, async (req, res) => {
     [
       title || null,
       data || null,
-      organizationId || null,
+      finalOrganizationId || null,
       finalStatus,
       id,
       req.user.id
@@ -775,6 +829,8 @@ app.get("/api/admin/summary", auth, requireAdmin, async (req, res) => {
       FROM projects
       WHERE status ILIKE '%transmis%'
          OR status ILIKE '%submitted%'
+         OR status = 'sent'
+         OR status = 'published'
          OR COALESCE((data->>'configTransmise')::boolean, false) = true
     `),
     pool.query(`SELECT COUNT(*)::int AS count FROM organizations WHERE type = 'client'`)
@@ -1013,7 +1069,7 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
           false,
         data,
         organizationId: row.organization_id,
-        organizationName: row.organization_name || "",
+        organizationName: row.organization_name || row.company_name || "",
         organizationPassationsPack: row.organization_passations_pack || "",
         organizationPassationsQuota: Number(row.organization_passations_quota || 0),
         organizationPassationsUsed: Number(row.organization_passations_used || 0),
@@ -1043,6 +1099,7 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
     })
   });
 });
+
 app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
@@ -1076,6 +1133,7 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
     res.status(500).json({ error: "Erreur mise à jour statut projet" });
   }
 });
+
 app.post("/api/admin/test-email", auth, requireAdmin, async (req, res) => {
   const { email } = req.body;
 
@@ -1149,6 +1207,11 @@ app.post("/api/admin/users", auth, requireAdmin, async (req, res) => {
     );
 
     const user = userResult.rows[0];
+
+    if (safeRole === "client" && companyName) {
+      await ensureDirectClientOrganization(user.id);
+    }
+
     const loginUrl = `${FRONTEND_URL}/login.html?redirect=account.html%3Ftab%3Dsecurite%26firstLogin%3D1`;
 
     const mailResult = await sendTransactionalEmail({
