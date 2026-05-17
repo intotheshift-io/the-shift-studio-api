@@ -1468,25 +1468,62 @@ app.delete("/api/admin/users/:id", auth, requireAdmin, async (req, res) => {
     return res.status(400).json({ error: "Vous ne pouvez pas supprimer votre propre compte admin" });
   }
 
+  const client = await pool.connect();
+
   try {
-    const userResult = await pool.query(
+    await client.query("BEGIN");
+
+    const userCheck = await client.query(
+      `SELECT id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at
+       FROM users
+       WHERE id = $1`,
+      [id]
+    );
+
+    if (!userCheck.rows[0]) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Utilisateur introuvable" });
+    }
+
+    await client.query(
+      `DELETE FROM projects
+       WHERE organization_id IN (
+         SELECT id FROM organizations WHERE created_by = $1
+       )`,
+      [id]
+    );
+
+    await client.query(
+      `DELETE FROM organizations
+       WHERE created_by = $1`,
+      [id]
+    );
+
+    await client.query(
+      `DELETE FROM projects
+       WHERE user_id = $1 OR created_by = $1`,
+      [id]
+    );
+
+    const deletedUser = await client.query(
       `DELETE FROM users
        WHERE id = $1
        RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
       [id]
     );
 
-    if (!userResult.rows[0]) {
-      return res.status(404).json({ error: "Utilisateur introuvable" });
-    }
+    await client.query("COMMIT");
 
     res.json({
       ok: true,
-      deletedUser: formatUser(userResult.rows[0])
+      deletedUser: formatUser(deletedUser.rows[0])
     });
   } catch (err) {
+    await client.query("ROLLBACK");
     console.error("Erreur suppression utilisateur", err);
     res.status(500).json({ error: "Erreur suppression utilisateur" });
+  } finally {
+    client.release();
   }
 });
 
