@@ -1275,7 +1275,30 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
     res.status(500).json({ error: "Erreur publication projet" });
   }
 });
+app.delete("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
 
+  try {
+    const result = await pool.query(
+      `DELETE FROM projects
+       WHERE id = $1
+       RETURNING id, title`,
+      [id]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    res.json({
+      ok: true,
+      deletedProject: result.rows[0]
+    });
+  } catch (err) {
+    console.error("Erreur suppression projet admin", err);
+    res.status(500).json({ error: "Erreur suppression projet" });
+  }
+});
 app.post("/api/admin/test-email", auth, requireAdmin, async (req, res) => {
   const { email } = req.body;
 
