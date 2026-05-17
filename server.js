@@ -238,6 +238,27 @@ async function initDb() {
     ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
   `);
 
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS share_url TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS results_url TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS published_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS current_step TEXT;
+  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS campaigns (
       id SERIAL PRIMARY KEY,
@@ -334,7 +355,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "admin-publication-urls-v2-creator-fields",
+    version: "project-persistence-v3-user-flow",
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
@@ -346,6 +367,7 @@ app.get("/debug-version", (req, res) => {
     hasProjectOrganizationAutolink: true,
     hasProjectPublicationUrls: true,
     hasCreatorFields: true,
+    hasProjectCurrentStep: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -657,14 +679,16 @@ app.get("/api/projects", auth, async (req, res) => {
         Number(row.organization_passations_used || 0)
       ),
       shareUrl: row.share_url || "",
+      currentStep: row.current_step || row.data?.step || "",
       resultsUrl: row.results_url || "",
-      publishedAt: row.published_at || null
+      publishedAt: row.published_at || null,
+      currentStep: row.current_step || data.step || data.current_step || ""
     }))
   });
 });
 
 app.post("/api/projects", auth, async (req, res) => {
-  const { title, data, organizationId, status } = req.body;
+  const { title, data, organizationId, status, projectId, currentStep } = req.body;
 
   const configSent =
     data?.configTransmise === true ||
@@ -675,6 +699,7 @@ app.post("/api/projects", auth, async (req, res) => {
     data?.payload?.submitted === true;
 
   const finalStatus = status || (configSent ? "sent" : "draft");
+  const finalStep = currentStep || data?.step || data?.current_step || data?.state?.current_step || null;
 
   let finalOrganizationId = organizationId || null;
 
@@ -682,16 +707,44 @@ app.post("/api/projects", auth, async (req, res) => {
     finalOrganizationId = await ensureDirectClientOrganization(req.user.id);
   }
 
+  if (projectId) {
+    const updateResult = await pool.query(
+      `UPDATE projects
+       SET title = COALESCE($1, title),
+           status = COALESCE($2, status),
+           data = COALESCE($3, data),
+           organization_id = COALESCE($4, organization_id),
+           current_step = COALESCE($5, current_step),
+           updated_at = NOW()
+       WHERE id = $6 AND user_id = $7
+       RETURNING *`,
+      [
+        title || null,
+        finalStatus,
+        data || null,
+        finalOrganizationId || null,
+        finalStep,
+        projectId,
+        req.user.id
+      ]
+    );
+
+    if (updateResult.rows[0]) {
+      return res.json({ project: updateResult.rows[0] });
+    }
+  }
+
   const result = await pool.query(
-    `INSERT INTO projects (user_id, title, status, data, created_by, organization_id)
-     VALUES ($1, $2, $3, $4, $1, $5)
+    `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step)
+     VALUES ($1, $2, $3, $4, $1, $5, $6)
      RETURNING *`,
     [
       req.user.id,
       title || "Nouveau projet",
       finalStatus,
       data || {},
-      finalOrganizationId || null
+      finalOrganizationId || null,
+      finalStep
     ]
   );
 
@@ -705,11 +758,13 @@ app.put("/api/projects/:id", auth, async (req, res) => {
     title,
     data,
     organizationId,
-    status
+    status,
+    currentStep
   } = req.body;
 
   let finalStatus = status || null;
   let finalOrganizationId = organizationId || null;
+  const finalStep = currentStep || data?.step || data?.current_step || data?.state?.current_step || null;
 
   const configSent =
     data?.configTransmise === true ||
@@ -734,14 +789,16 @@ app.put("/api/projects/:id", auth, async (req, res) => {
          data = COALESCE($2, data),
          organization_id = COALESCE($3, organization_id),
          status = COALESCE($4, status),
+         current_step = COALESCE($5, current_step),
          updated_at = NOW()
-     WHERE id = $5 AND user_id = $6
+     WHERE id = $6 AND user_id = $7
      RETURNING *`,
     [
       title || null,
       data || null,
       finalOrganizationId || null,
       finalStatus,
+      finalStep,
       id,
       req.user.id
     ]
