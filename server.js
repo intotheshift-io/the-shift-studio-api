@@ -1,4 +1,519 @@
-import express from "express";
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mon compte — Shift Studio</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/asap@5/index.css">
+<link rel="stylesheet" href="style.css">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Asap',sans-serif;background:#f3f6f8;color:#18375d;min-height:100vh}
+.account-page{max-width:1120px;margin:0 auto;padding:28px 22px 70px}
+.account-hero{background:linear-gradient(135deg,#0d4c72,#123d59);color:#fff;border-radius:28px;padding:28px;margin:18px 0 22px;box-shadow:0 18px 45px rgba(13,76,114,.22);display:flex;justify-content:space-between;gap:18px;align-items:flex-start}
+.account-hero h1{font-size:32px;margin:0 0 8px}.account-hero p{opacity:.86;line-height:1.45;max-width:680px}.hero-badge{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.24);border-radius:999px;padding:8px 12px;font-size:13px;font-weight:900;white-space:nowrap}
+.layout{display:grid;grid-template-columns:230px 1fr;gap:18px}.side{background:#fff;border:1px solid #dfe8ef;border-radius:24px;padding:14px;height:max-content;position:sticky;top:78px;box-shadow:0 12px 30px rgba(13,76,114,.06)}.side-btn{width:100%;border:0;background:transparent;text-align:left;padding:11px 10px;border-radius:14px;color:#0d4c72;font-family:'Asap',sans-serif;font-weight:900;cursor:pointer;display:flex;align-items:center;gap:8px}.side-btn:hover,.side-btn.on{background:#eaf3f8}.side-ico{width:24px;height:24px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;background:#eef6fb;flex-shrink:0;font-size:14px}.side-btn.on .side-ico{background:#0d4c72;color:#fff}
+.panel{display:none}.panel.on{display:block}.card{background:#fff;border:1px solid #dfe8ef;border-radius:24px;padding:22px;margin-bottom:18px;box-shadow:0 12px 30px rgba(13,76,114,.06)}.card h2{font-size:21px;color:#0d4c72;margin-bottom:6px}.card-sub{font-size:13px;color:#718497;line-height:1.45;margin-bottom:18px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{margin-bottom:14px}.field label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:900;color:#0d4c72;margin-bottom:6px}.input{width:100%;border:1px solid #d5e1e9;border-radius:14px;padding:12px 13px;font-family:'Asap',sans-serif;font-size:14px;color:#18375d;background:#fff;outline:none}.input:focus{border-color:#0d4c72;box-shadow:0 0 0 4px rgba(13,76,114,.08)}.input[disabled]{background:#f6f9fb;color:#718497}.badge{display:inline-flex;align-items:center;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:900}.badge-admin{background:#e7f1f7;color:#0d4c72}.badge-client{background:#ecf8ee;color:#2c7a43}.badge-partner{background:#fff2d8;color:#996700}.btn-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}.btn{border:0;border-radius:14px;padding:11px 15px;font-family:'Asap',sans-serif;font-weight:900;cursor:pointer}.btn-primary{background:#0d4c72;color:#fff}.btn-secondary{background:#eaf3f8;color:#0d4c72}.btn-danger{background:#fff0f0;color:#9d2b2b;border:1px solid #ffd1d1}.notice{background:#eef6fb;border:1px solid #d7e8f1;color:#244b63;border-radius:16px;padding:13px 15px;margin-bottom:14px;line-height:1.45;font-size:13px}.notice.important{background:#fff8e1;border-color:#ffe3a1;color:#735100}.alert{display:none;border-radius:16px;padding:13px 14px;margin-bottom:16px;font-size:13px;line-height:1.45}.alert.error{background:#fff0f0;color:#9d2b2b;border:1px solid #ffd1d1}.alert.success{background:#eefbf3;color:#176239;border:1px solid #bee8cd}.account-mini{display:flex;align-items:center;gap:12px;margin-bottom:16px}.avatar{width:48px;height:48px;border-radius:50%;background:#0d4c72;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:900}.muted{font-size:13px;color:#718497}
+.color-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}.color-ico{width:30px;height:30px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}.ico-blue{background:#e7f1f7;color:#0d4c72}.ico-green{background:#e8f7ef;color:#177245}.ico-yellow{background:#fff5d8;color:#9a6a00}.ico-pink{background:#fff0f3;color:#b42354}.download-hint{background:#f7fbff;border:1px dashed #b8d8ec;color:#315b73;border-radius:16px;padding:12px 14px;font-size:13px;line-height:1.45;margin-top:14px}.download-hint strong{color:#0d4c72}.password-wrap{position:relative;width:100%}.password-wrap .input{padding-right:46px}
+.logo-box{border:1px solid #dfe8ef;background:#f8fbfd;border-radius:18px;padding:16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}.logo-preview{width:70px;height:70px;border-radius:18px;background:linear-gradient(135deg,#0d4c72,#007883);color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:900;overflow:hidden;flex-shrink:0}.logo-preview img{width:100%;height:100%;object-fit:contain;background:#fff}.logo-info{flex:1;min-width:190px}.logo-name{font-size:14px;font-weight:900;color:#0d4c72;margin-bottom:3px}.logo-hint{font-size:12px;color:#718497;line-height:1.45}.passation-preview{border:1px solid #dfe8ef;border-radius:22px;overflow:hidden;max-width:480px;background:#fff}.pp-head{background:linear-gradient(135deg,#0d4c72,#007883);padding:20px;color:#fff;display:flex;align-items:center;gap:14px}.pp-logo{width:54px;height:54px;border-radius:15px;background:rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;font-weight:900;overflow:hidden;flex-shrink:0}.pp-logo img{width:100%;height:100%;object-fit:contain;background:#fff}.pp-body{padding:18px}.pp-title{font-size:17px;font-weight:900;color:#0d4c72;margin-bottom:4px}.pp-sub{font-size:13px;color:#718497;line-height:1.45}.media-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.media-card{background:#fff;border:1px solid #dfe8ef;border-radius:18px;overflow:hidden}.media-thumb{height:126px;background:linear-gradient(135deg,#edf4f8,#d9ecf5);display:flex;align-items:center;justify-content:center;font-size:34px;position:relative}.media-badge{position:absolute;top:10px;right:10px;background:#fff;color:#0d4c72;border-radius:999px;padding:4px 8px;font-size:10px;font-weight:900}.media-info{padding:12px}.media-name{font-size:13px;font-weight:900;color:#0d4c72;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.media-meta{font-size:12px;color:#718497;margin-top:3px}.media-actions{display:flex;gap:8px;margin-top:10px}.media-actions button{flex:1;border:1px solid #dfe8ef;background:#fff;border-radius:10px;padding:8px;font-family:'Asap',sans-serif;font-size:12px;font-weight:900;color:#0d4c72;cursor:pointer}.media-actions button.delete{color:#9d2b2b}.upload-zone{min-height:196px;border:2px dashed #d5e1e9;border-radius:18px;background:#f8fbfd;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:16px;cursor:pointer;color:#718497}.upload-zone:hover{border-color:#0d4c72;background:#eaf3f8;color:#0d4c72}.upload-plus{width:44px;height:44px;border-radius:14px;background:#0d4c72;color:#fff;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:900;margin-bottom:10px}
+.eye-btn{position:absolute;right:8px;top:50%;transform:translateY(-50%);border:0;background:transparent;color:#0d4c72;font-size:18px;cursor:pointer;padding:6px;border-radius:10px;line-height:1}.eye-btn:hover{background:#eaf3f8}
+@media(max-width:850px){.layout{grid-template-columns:1fr}.side{position:relative;top:auto;display:flex;overflow-x:auto}.side-btn{white-space:nowrap}.account-hero{flex-direction:column}.grid2{grid-template-columns:1fr}.media-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.account-page{padding:16px 14px 56px}.account-hero{padding:22px;border-radius:22px}.account-hero h1{font-size:26px}.card{padding:18px;border-radius:20px}.media-grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div id="header"></div>
+<script src="header.js"></script>
+
+<main class="account-page">
+  <section class="account-hero">
+    <div>
+      <h1>Paramètres du compte</h1>
+      <p>Gérez votre profil, votre organisation, votre mot de passe et les réglages visibles selon votre rôle Shift Studio.</p>
+    </div>
+    <div id="heroRole" class="hero-badge">Compte</div>
+  </section>
+
+  <div id="alertError" class="alert error"></div>
+  <div id="alertSuccess" class="alert success"></div>
+
+  <div class="layout">
+    <aside class="side">
+      <button class="side-btn on" onclick="showPanel('profil', this)"><span class="side-ico">👤</span><span>Profil</span></button>
+      <button id="navOrganisation" class="side-btn" onclick="showPanel('organisation', this)"><span class="side-ico">🏢</span><span>Organisation</span></button>
+      <button id="navPassation" class="side-btn" onclick="showPanel('passation', this)" style="display:none"><span class="side-ico">🎨</span><span>Passation répondants</span></button>
+      <button id="navPartner" class="side-btn" onclick="showPanel('partner', this)" style="display:none"><span class="side-ico">🤝</span><span>Profil partenaire</span></button>
+      <button class="side-btn" onclick="showPanel('securite', this)"><span class="side-ico">🔐</span><span>Mot de passe</span></button>
+    </aside>
+
+    <section>
+      <div id="panel-profil" class="panel on">
+        <div class="card">
+          <div class="account-mini">
+            <div id="avatar" class="avatar">—</div>
+            <div>
+              <div class="color-head"><span class="color-ico ico-blue">👤</span><h2 style="margin-bottom:0">Profil utilisateur</h2></div>
+              <div id="profileEmailSmall" class="muted">—</div>
+            </div>
+          </div>
+          <div class="card-sub">Ces informations identifient votre compte dans Shift Studio.</div>
+
+          <div class="grid2">
+            <div class="field"><label>Prénom</label><input id="firstName" class="input" placeholder="Prénom"></div>
+            <div class="field"><label>Nom</label><input id="lastName" class="input" placeholder="Nom"></div>
+          </div>
+          <div class="grid2">
+            <div class="field"><label>Email</label><input id="email" class="input" type="email" placeholder="email@entreprise.fr" disabled></div>
+            <div class="field"><label>Rôle</label><div id="roleBadge"></div></div>
+          </div>
+          <div class="field"><label>Entreprise</label><input id="companyName" class="input" placeholder="Entreprise"></div>
+          <div class="btn-row">
+            <button class="btn btn-primary" onclick="saveProfile()">Enregistrer</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="panel-organisation" class="panel">
+        <div class="card">
+          <div class="color-head"><span class="color-ico ico-green">🏢</span><h2 style="margin-bottom:0">Organisation</h2></div>
+          <div class="card-sub">Informations de l’organisation associée à votre compte client.</div>
+          <div class="field"><label>Nom de l’organisation</label><input id="orgName" class="input" placeholder="Nom de l’entreprise"></div>
+          <div class="field"><label>Email de contact</label><input id="orgEmail" class="input" type="email" placeholder="email@entreprise.fr" disabled></div>
+          <div class="field"><label>Type de compte</label><input id="accountType" class="input" disabled value="Compte client Shift Studio"></div>
+          <div class="btn-row"><button class="btn btn-primary" onclick="saveOrg()">Enregistrer</button></div>
+        </div>
+
+        <div class="card">
+          <div class="color-head"><span class="color-ico ico-yellow">🖼️</span><h2 style="margin-bottom:0">Logo de l’organisation</h2></div>
+          <div class="card-sub">Ce logo pourra être utilisé dans les exports et les supports de communication du compte client.</div>
+          <div class="logo-box">
+            <div id="orgLogoPreview" class="logo-preview">LOGO</div>
+            <div class="logo-info">
+              <div id="orgLogoName" class="logo-name">Aucun logo importé</div>
+              <div class="logo-hint">PNG, JPG, SVG ou GIF. Le logo est enregistré sur votre compte.</div>
+            </div>
+            <button class="btn btn-secondary" type="button" onclick="document.getElementById('orgLogoInput').click()">Changer</button>
+            <button id="orgLogoDownload" class="btn btn-primary" type="button" onclick="downloadSelectedLogo('org')" style="display:none">Télécharger</button>
+            <input id="orgLogoInput" type="file" accept="image/*" hidden onchange="previewLogo(event,'org')">
+          </div>
+        </div>
+      </div>
+
+      <div id="panel-passation" class="panel">
+        <div class="card">
+          <div class="color-head"><span class="color-ico ico-pink">🎨</span><h2 style="margin-bottom:0">Passation répondants</h2></div>
+          <div class="card-sub">Réglages visibles sur la page de passation.</div>
+          <div class="logo-box">
+            <div id="passLogoPreview" class="logo-preview">LOGO</div>
+            <div class="logo-info">
+              <div id="passLogoName" class="logo-name">Aucun logo de passation importé</div>
+              <div class="logo-hint">PNG, JPG, SVG ou GIF. Le logo est enregistré sur votre compte.</div>
+            </div>
+            <button class="btn btn-secondary" type="button" onclick="document.getElementById('passLogoInput').click()">Changer</button>
+            <button id="passLogoDownload" class="btn btn-primary" type="button" onclick="downloadSelectedLogo('pass')" style="display:none">Télécharger</button>
+            <input id="passLogoInput" type="file" accept="image/*" hidden onchange="previewLogo(event,'pass')">
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-secondary" type="button" onclick="useOrgLogoForPassation()">Utiliser le logo organisation</button>
+            <button class="btn btn-primary" type="button" onclick="savePassationSettings()">Enregistrer</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="color-head"><span class="color-ico ico-blue">👁️</span><h2 style="margin-bottom:0">Aperçu répondant</h2></div>
+          <div class="card-sub">Aperçu indicatif de l’en-tête que verront les répondants.</div>
+          <div class="passation-preview">
+            <div class="pp-head">
+              <div id="passationPreviewLogo" class="pp-logo">LOGO</div>
+              <div>
+                <div id="passationPreviewCompany" style="font-weight:900;font-size:17px">Votre organisation</div>
+                <div style="font-size:13px;opacity:.76;margin-top:3px">Autodiagnostic comportemental</div>
+              </div>
+            </div>
+            <div class="pp-body">
+              <div class="pp-title">Titre de l’autodiagnostic</div>
+              <div class="pp-sub">4 chapitres · environ 10 minutes · résultats individuels à la fin du parcours</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="panel-info-images" class="panel" style="display:none"></div>
+
+      <div id="panel-partner" class="panel">
+        <div class="card">
+          <div class="color-head"><span class="color-ico ico-yellow">🤝</span><h2 style="margin-bottom:0">Profil partenaire</h2></div>
+          <div class="card-sub">Informations utiles si vous intervenez comme cabinet, expert ou partenaire sur des autodiagnostics.</div>
+          <div class="field"><label>Nom de la structure</label><input id="partnerCompany" class="input" placeholder="Cabinet / structure"></div>
+          <div class="field"><label>Domaine d’expertise</label><input id="partnerExpertise" class="input" placeholder="Ex. management, QVT, risques, inclusion, cybersécurité..."></div>
+          <div class="field"><label>Email de contact</label><input id="partnerEmail" class="input" type="email" disabled></div>
+          <div class="notice">Cette section pourra ensuite servir à afficher vos contenus, vos autodiagnostics conçus ou vos missions en cours.</div>
+        </div>
+      </div>
+
+      <div id="panel-securite" class="panel">
+        <div class="card">
+          <div class="color-head"><span class="color-ico ico-pink">🔐</span><h2 style="margin-bottom:0">Changer mon mot de passe</h2></div>
+          <div class="card-sub">Mettez à jour le mot de passe de votre compte.</div>
+          <div id="firstLoginNotice" class="notice important" style="display:none">Pour sécuriser votre accès, choisissez maintenant votre propre mot de passe.</div>
+
+          <div class="field">
+            <label>Mot de passe actuel</label>
+            <div class="password-wrap">
+              <input id="currentPassword" class="input" type="password" autocomplete="current-password" placeholder="Mot de passe actuel">
+              <button class="eye-btn" type="button" onclick="togglePassword('currentPassword', this)">👁</button>
+            </div>
+          </div>
+
+          <div class="grid2">
+            <div class="field">
+              <label>Nouveau mot de passe</label>
+              <div class="password-wrap">
+                <input id="newPassword" class="input" type="password" autocomplete="new-password" placeholder="Minimum 8 caractères">
+                <button class="eye-btn" type="button" onclick="togglePassword('newPassword', this)">👁</button>
+              </div>
+            </div>
+            <div class="field">
+              <label>Confirmer</label>
+              <div class="password-wrap">
+                <input id="confirmPassword" class="input" type="password" autocomplete="new-password" placeholder="Retapez le mot de passe">
+                <button class="eye-btn" type="button" onclick="togglePassword('confirmPassword', this)">👁</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="btn-row"><button class="btn btn-primary" onclick="changePasswordNotReady()">Changer le mot de passe</button></div>
+          <div class="notice" style="margin-top:14px">Après modification, utilisez votre nouveau mot de passe pour vos prochaines connexions.</div>
+        </div>
+      </div>
+
+    </section>
+  </div>
+</main>
+
+<script>
+const API_BASE_URL = window.location.hostname === 'localhost' 
+  ? "https://into-the-shift-studio-api-staging.osc-fr1.scalingo.io"
+  : "https://into-the-shift-studio-api.osc-fr1.scalingo.io";
+
+function getToken(){return localStorage.getItem("its_token") || localStorage.getItem("token") || localStorage.getItem("auth_token") || "";}
+function decodeJwt(token){try{const payload=token.split(".")[1];return JSON.parse(atob(payload.replace(/-/g,"+").replace(/_/g,"/")));}catch(e){return null;}}
+function tokenIsExpired(token){const p=decodeJwt(token);if(!p?.exp)return false;return Date.now()>=p.exp*1000;}
+
+async function apiGet(path){
+  const res=await fetch(API_BASE_URL+path,{headers:{"Content-Type":"application/json","Authorization":"Bearer "+getToken()}});
+  if(!res.ok)throw new Error("Erreur API");
+  return await res.json();
+}
+
+async function apiPatch(path,body){
+  const res=await fetch(API_BASE_URL+path,{
+    method:"PATCH",
+    headers:{"Content-Type":"application/json","Authorization":"Bearer "+getToken()},
+    body:JSON.stringify(body)
+  });
+  if(!res.ok){
+    let msg="Erreur API";
+    try{const e=await res.json();msg=e.error||e.message||msg;}catch(_){}
+    throw new Error(msg);
+  }
+  return await res.json();
+}
+
+function getStoredUser(){
+  const possibleKeys=["its_user","user","auth_user"];
+  for(const key of possibleKeys){
+    try{const raw=localStorage.getItem(key);if(raw)return JSON.parse(raw);}catch(e){}
+  }
+  return {
+    id:localStorage.getItem("its_user_id")||"",
+    email:localStorage.getItem("its_user_email")||"",
+    firstName:localStorage.getItem("its_user_firstname")||"",
+    lastName:localStorage.getItem("its_user_lastname")||"",
+    companyName:localStorage.getItem("its_user_company")||"",
+    role:localStorage.getItem("its_user_role")||""
+  };
+}
+
+function storeUser(user){
+  if(!user)return;
+  localStorage.setItem("its_user",JSON.stringify(user));
+  localStorage.setItem("its_user_id",user.id||"");
+  localStorage.setItem("its_user_email",user.email||"");
+  localStorage.setItem("its_user_firstname",user.firstName||"");
+  localStorage.setItem("its_user_lastname",user.lastName||"");
+  localStorage.setItem("its_user_company",user.companyName||"");
+  localStorage.setItem("its_user_role",user.role||"client");
+}
+
+function requireLogin(){
+  const token=getToken();
+  if(!token||tokenIsExpired(token)){
+    logout(false);
+    window.location.href="login.html?redirect=account.html";
+    return false;
+  }
+  return true;
+}
+
+function roleBadge(role){
+  const r=String(role||"client").toLowerCase();
+  if(r==="admin")return `<span class="badge badge-admin">admin</span>`;
+  if(r==="partner"||r==="expert")return `<span class="badge badge-partner">partner</span>`;
+  return `<span class="badge badge-client">client</span>`;
+}
+
+function initials(first,last,email){
+  const f=(first||"").trim()[0]||"";
+  const l=(last||"").trim()[0]||"";
+  const fromName=(f+l).toUpperCase();
+  if(fromName)return fromName;
+  return String(email||"?").trim()[0]?.toUpperCase()||"?";
+}
+
+function showPanel(id,btn){
+  document.querySelectorAll(".panel").forEach(p=>p.classList.remove("on"));
+  document.querySelectorAll(".side-btn").forEach(b=>b.classList.remove("on"));
+  document.getElementById("panel-"+id)?.classList.add("on");
+  btn?.classList.add("on");
+}
+
+function openPanelFromUrl(){
+  const params=new URLSearchParams(window.location.search);
+  const tab=params.get("tab");
+  if(tab){
+    const btn=[...document.querySelectorAll(".side-btn")].find(b=>String(b.getAttribute("onclick")||"").includes("'"+tab+"'"));
+    showPanel(tab,btn);
+  }
+  if(params.get("firstLogin")==="1"){
+    const notice=document.getElementById("firstLoginNotice");
+    if(notice)notice.style.display="block";
+  }
+}
+
+function showError(msg){
+  const e=document.getElementById("alertError"),s=document.getElementById("alertSuccess");
+  s.style.display="none";
+  e.textContent=msg;
+  e.style.display="block";
+  e.scrollIntoView({behavior:"smooth",block:"center"});
+}
+
+function showSuccess(msg){
+  const e=document.getElementById("alertError"),s=document.getElementById("alertSuccess");
+  e.style.display="none";
+  s.textContent=msg;
+  s.style.display="block";
+  setTimeout(()=>{s.style.display="none"},3000);
+}
+
+async function saveProfile(extra={}){
+  const payload={
+    firstName:document.getElementById("firstName").value.trim(),
+    lastName:document.getElementById("lastName").value.trim(),
+    companyName:document.getElementById("companyName").value.trim(),
+    ...extra
+  };
+
+  try{
+    const data=await apiPatch("/api/me",payload);
+    storeUser(data.user);
+    hydrateAccount(data.user);
+    showSuccess("Informations mises à jour.");
+  }catch(err){
+    console.error(err);
+    showError("Impossible d’enregistrer les informations. Détail : "+err.message);
+  }
+}
+
+async function saveOrg(){
+  document.getElementById("companyName").value=document.getElementById("orgName").value.trim();
+  await saveProfile({
+    organizationName:document.getElementById("orgName").value.trim(),
+    organizationLogoName:selectedLogos.org?.name || null,
+    organizationLogoDataUrl:selectedLogos.org?.dataUrl || null
+  });
+}
+
+async function changePasswordNotReady(){
+  const current=document.getElementById("currentPassword").value;
+  const n=document.getElementById("newPassword").value;
+  const c=document.getElementById("confirmPassword").value;
+  if(!current){showError("Renseignez votre mot de passe actuel.");return;}
+  if(n.length<8){showError("Le nouveau mot de passe doit contenir au moins 8 caractères.");return;}
+  if(n!==c){showError("Les deux mots de passe ne sont pas identiques.");return;}
+
+  try{
+    const data=await apiPatch("/api/me/password",{currentPassword:current,newPassword:n});
+    if(data.user){storeUser(data.user);hydrateAccount(data.user);}
+    document.getElementById("currentPassword").value="";
+    document.getElementById("newPassword").value="";
+    document.getElementById("confirmPassword").value="";
+    const notice=document.getElementById("firstLoginNotice");
+    if(notice)notice.style.display="none";
+    showSuccess("Mot de passe mis à jour.");
+  }catch(err){
+    console.error(err);
+    showError("Impossible de modifier le mot de passe. Détail : "+err.message);
+  }
+}
+
+function togglePassword(inputId,btn){
+  const input=document.getElementById(inputId);
+  if(!input)return;
+  const hidden=input.type==="password";
+  input.type=hidden?"text":"password";
+  btn.textContent=hidden?"🙈":"👁";
+}
+
+
+const selectedLogos={org:null,pass:null};
+
+async function savePassationSettings(){
+  await saveProfile({
+    passationLogoName:selectedLogos.pass?.name || null,
+    passationLogoDataUrl:selectedLogos.pass?.dataUrl || null
+  });
+}
+
+function downloadSelectedLogo(type){
+  const item=selectedLogos[type];
+  if(!item?.dataUrl){
+    showError("Aucun logo à télécharger pour le moment.");
+    return;
+  }
+  const a=document.createElement("a");
+  a.href=item.dataUrl;
+  a.download=item.name||"logo-shift-studio.png";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function previewLogo(event,type){
+  const file=event.target.files?.[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=function(e){
+    const img=`<img src="${e.target.result}" alt="">`;
+    selectedLogos[type]={name:file.name,dataUrl:e.target.result};
+    if(type==="org"){
+      document.getElementById("orgLogoPreview").innerHTML=img;
+      document.getElementById("orgLogoName").textContent=file.name;
+      document.getElementById("orgLogoDownload").style.display="inline-flex";
+    }
+    if(type==="pass"){
+      document.getElementById("passLogoPreview").innerHTML=img;
+      document.getElementById("passationPreviewLogo").innerHTML=img;
+      document.getElementById("passLogoName").textContent=file.name;
+      document.getElementById("passLogoDownload").style.display="inline-flex";
+    }
+    showSuccess("Image ajoutée en aperçu. Vous pouvez la télécharger pour le paramétrage réel.");
+  };
+  reader.readAsDataURL(file);
+}
+
+function useOrgLogoForPassation(){
+  document.getElementById("passLogoPreview").innerHTML=document.getElementById("orgLogoPreview").innerHTML;
+  document.getElementById("passationPreviewLogo").innerHTML=document.getElementById("orgLogoPreview").innerHTML;
+  document.getElementById("passLogoName").textContent=document.getElementById("orgLogoName").textContent||"Logo organisation";
+  if(selectedLogos.org){
+    selectedLogos.pass={...selectedLogos.org};
+    document.getElementById("passLogoDownload").style.display="inline-flex";
+  }
+  showSuccess("Logo organisation utilisé pour la passation.");
+}
+
+function logout(redirect=true){
+  ["its_token","token","auth_token","its_logged_in","its_user","user","auth_user"].forEach(k=>localStorage.removeItem(k));
+  if(redirect)window.location.href="login.html";
+}
+
+function hydrateAccount(forcedUser=null){
+  const token=getToken();
+  const payload=decodeJwt(token)||{};
+  const user=forcedUser||getStoredUser();
+  const email=user.email||payload.email||"";
+  const role=String(user.role||payload.role||"client").toLowerCase();
+  const first=user.firstName||user.firstname||user.first_name||"";
+  const last=user.lastName||user.lastname||user.last_name||"";
+  const company=user.companyName||user.company||user.company_name||"";
+  const orgLogoName=user.organizationLogoName||user.organization_logo_name||"";
+  const orgLogoDataUrl=user.organizationLogoDataUrl||user.organization_logo_data_url||"";
+  const passLogoName=user.passationLogoName||user.passation_logo_name||"";
+  const passLogoDataUrl=user.passationLogoDataUrl||user.passation_logo_data_url||"";
+
+  if(orgLogoDataUrl){
+    selectedLogos.org={name:orgLogoName||"logo-organisation.png",dataUrl:orgLogoDataUrl};
+    document.getElementById("orgLogoPreview").innerHTML=`<img src="${orgLogoDataUrl}" alt="">`;
+    document.getElementById("orgLogoName").textContent=orgLogoName||"Logo organisation";
+    document.getElementById("orgLogoDownload").style.display="inline-flex";
+  }
+  if(passLogoDataUrl){
+    selectedLogos.pass={name:passLogoName||"logo-passation.png",dataUrl:passLogoDataUrl};
+    document.getElementById("passLogoPreview").innerHTML=`<img src="${passLogoDataUrl}" alt="">`;
+    document.getElementById("passationPreviewLogo").innerHTML=`<img src="${passLogoDataUrl}" alt="">`;
+    document.getElementById("passLogoName").textContent=passLogoName||"Logo passation";
+    document.getElementById("passLogoDownload").style.display="inline-flex";
+  }
+
+  document.getElementById("firstName").value=first;
+  document.getElementById("lastName").value=last;
+  document.getElementById("email").value=email;
+  document.getElementById("companyName").value=company;
+  document.getElementById("orgName").value=company;
+  document.getElementById("orgEmail").value=email;
+  const passationCompany=document.getElementById("passationPreviewCompany");
+  if(passationCompany)passationCompany.textContent=company||"Votre organisation";
+  document.getElementById("profileEmailSmall").textContent=email||"Compte connecté";
+  document.getElementById("roleBadge").innerHTML=roleBadge(role);
+  document.getElementById("heroRole").textContent="Rôle : "+role;
+  document.getElementById("avatar").textContent=initials(first,last,email);
+  document.getElementById("userId").value=user.id||payload.id||"—";
+
+  const navOrganisation=document.getElementById("navOrganisation");
+  const navPartner=document.getElementById("navPartner");
+  const navPassation=document.getElementById("navPassation");
+  const partnerEmail=document.getElementById("partnerEmail");
+  const partnerCompany=document.getElementById("partnerCompany");
+
+  if(partnerEmail)partnerEmail.value=email;
+  if(partnerCompany)partnerCompany.value=company;
+
+  if(role==="admin"){
+    if(navOrganisation)navOrganisation.style.display="none";
+    if(navPassation)navPassation.style.display="none";
+    if(navPartner)navPartner.style.display="none";
+  }else if(role==="partner"){
+    if(navOrganisation)navOrganisation.style.display="none";
+    if(navPassation)navPassation.style.display="none";
+    if(navPartner)navPartner.style.display="block";
+  }else{
+    if(navOrganisation)navOrganisation.style.display="block";
+    if(navPassation)navPassation.style.display="block";
+    if(navPartner)navPartner.style.display="none";
+  }
+}
+
+async function loadMe(){
+  try{
+    const data=await apiGet("/api/me");
+    storeUser(data.user);
+    hydrateAccount(data.user);
+  }catch(err){
+    hydrateAccount();
+  }
+}
+
+document.addEventListener("DOMContentLoaded",()=>{
+  if(requireLogin()){
+    loadMe();
+    openPanelFromUrl();
+  }
+});
+</script>
+</body>
+</html>import express from "express";
 import cors from "cors";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
