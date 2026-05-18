@@ -38,7 +38,7 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json({ limit: "5mb" }));
+app.use(express.json({ limit: "12mb" }));
 
 function formatUser(user) {
   if (!user) return null;
@@ -52,6 +52,10 @@ function formatUser(user) {
     firstName: user.first_name || "",
     lastName: user.last_name || "",
     companyName: user.company_name || "",
+    organizationLogoName: user.organization_logo_name || "",
+    organizationLogoDataUrl: user.organization_logo_data_url || "",
+    passationLogoName: user.passation_logo_name || "",
+    passationLogoDataUrl: user.passation_logo_data_url || "",
     role: user.role || "client",
     mustChangePassword: user.must_change_password === true,
     passationsQuota: quota,
@@ -183,6 +187,26 @@ async function initDb() {
   await pool.query(`
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS passations_used INTEGER DEFAULT 0;
+  `);
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS organization_logo_name TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS organization_logo_data_url TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS passation_logo_name TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS passation_logo_data_url TEXT;
   `);
 
   await pool.query(`
@@ -681,7 +705,7 @@ app.post("/api/register", async (req, res) => {
     const userResult = await pool.query(
       `INSERT INTO users (email, password_hash, first_name, last_name, company_name, role)
        VALUES ($1, $2, $3, $4, $5, 'client')
-       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
       [email.toLowerCase(), passwordHash, firstName || "", lastName || "", companyName || ""]
     );
 
@@ -861,7 +885,7 @@ app.post("/api/reset-password", async (req, res) => {
 
 app.get("/api/me", auth, async (req, res) => {
   const result = await pool.query(
-    `SELECT id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at
+    `SELECT id, email, first_name, last_name, company_name, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at
      FROM users
      WHERE id = $1`,
     [req.user.id]
@@ -871,26 +895,60 @@ app.get("/api/me", auth, async (req, res) => {
 });
 
 app.patch("/api/me", auth, async (req, res) => {
-  const { firstName, lastName, companyName } = req.body;
+  const {
+    firstName,
+    lastName,
+    companyName,
+    organizationLogoName,
+    organizationLogoDataUrl,
+    passationLogoName,
+    passationLogoDataUrl
+  } = req.body;
 
   try {
+    const currentResult = await pool.query(
+      `SELECT id, email, first_name, last_name, company_name,
+              organization_logo_name, organization_logo_data_url,
+              passation_logo_name, passation_logo_data_url,
+              role, must_change_password, passations_quota, passations_used, created_at
+       FROM users
+       WHERE id = $1`,
+      [req.user.id]
+    );
+
+    const current = currentResult.rows[0];
+    if (!current) {
+      return res.status(404).json({ error: "Utilisateur introuvable" });
+    }
+
     const result = await pool.query(
       `UPDATE users
        SET first_name = $1,
            last_name = $2,
-           company_name = $3
-       WHERE id = $4
-       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
+           company_name = $3,
+           organization_logo_name = $4,
+           organization_logo_data_url = $5,
+           passation_logo_name = $6,
+           passation_logo_data_url = $7
+       WHERE id = $8
+       RETURNING id, email, first_name, last_name, company_name,
+                 organization_logo_name, organization_logo_data_url,
+                 passation_logo_name, passation_logo_data_url,
+                 role, must_change_password, passations_quota, passations_used, created_at`,
       [
-        firstName || "",
-        lastName || "",
-        companyName || "",
+        firstName !== undefined ? firstName || "" : current.first_name || "",
+        lastName !== undefined ? lastName || "" : current.last_name || "",
+        companyName !== undefined ? companyName || "" : current.company_name || "",
+        organizationLogoName !== undefined && organizationLogoName !== null ? organizationLogoName : current.organization_logo_name,
+        organizationLogoDataUrl !== undefined && organizationLogoDataUrl !== null ? organizationLogoDataUrl : current.organization_logo_data_url,
+        passationLogoName !== undefined && passationLogoName !== null ? passationLogoName : current.passation_logo_name,
+        passationLogoDataUrl !== undefined && passationLogoDataUrl !== null ? passationLogoDataUrl : current.passation_logo_data_url,
         req.user.id
       ]
     );
 
-    if (!result.rows[0]) {
-      return res.status(404).json({ error: "Utilisateur introuvable" });
+    if (companyName) {
+      await ensureDirectClientOrganization(req.user.id);
     }
 
     res.json({ user: formatUser(result.rows[0]) });
@@ -932,7 +990,7 @@ app.patch("/api/me/password", auth, async (req, res) => {
            reset_password_token_hash = NULL,
            reset_password_expires_at = NULL
        WHERE id = $2
-       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
       [passwordHash, req.user.id]
     );
 
@@ -1240,7 +1298,7 @@ app.put("/api/projects/:id", auth, async (req, res) => {
 app.get("/api/partner/me", auth, requirePartnerOrAdmin, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at
+      `SELECT id, email, first_name, last_name, company_name, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at
        FROM users
        WHERE id = $1`,
       [req.user.id]
@@ -1463,7 +1521,7 @@ app.patch("/api/admin/users/:id/passations", auth, requireAdmin, async (req, res
        SET passations_quota = $1,
            passations_used = $2
        WHERE id = $3
-       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
       [
         Number(passationsQuota || 0),
         Number(passationsUsed || 0),
@@ -1491,7 +1549,7 @@ app.patch("/api/admin/users/:id/company", auth, requireAdmin, async (req, res) =
       `UPDATE users
        SET company_name = $1
        WHERE id = $2
-       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
       [
         companyName || "",
         id
@@ -1908,7 +1966,7 @@ app.post("/api/admin/users", auth, requireAdmin, async (req, res) => {
     const userResult = await pool.query(
       `INSERT INTO users (email, password_hash, first_name, last_name, company_name, role, must_change_password)
        VALUES ($1, $2, $3, $4, $5, $6, true)
-       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
       [
         email.toLowerCase(),
         passwordHash,
@@ -1994,7 +2052,7 @@ app.patch("/api/admin/users/:id/role", auth, requireAdmin, async (req, res) => {
       `UPDATE users
        SET role = $1
        WHERE id = $2
-       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
       [role, id]
     );
 
@@ -2022,7 +2080,7 @@ app.delete("/api/admin/users/:id", auth, requireAdmin, async (req, res) => {
     await client.query("BEGIN");
 
     const userCheck = await client.query(
-      `SELECT id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at
+      `SELECT id, email, first_name, last_name, company_name, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at
        FROM users
        WHERE id = $1`,
       [id]
@@ -2056,7 +2114,7 @@ app.delete("/api/admin/users/:id", auth, requireAdmin, async (req, res) => {
     const deletedUser = await client.query(
       `DELETE FROM users
        WHERE id = $1
-       RETURNING id, email, first_name, last_name, company_name, role, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
       [id]
     );
 
