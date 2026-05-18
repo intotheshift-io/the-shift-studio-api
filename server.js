@@ -620,7 +620,7 @@ async function runCampaignAlerts() {
 
 async function ensureDirectClientOrganization(userId) {
   const userResult = await pool.query(
-    `SELECT id, email, first_name, last_name, company_name
+    `SELECT id, email, first_name, last_name, company_name, role
      FROM users
      WHERE id = $1`,
     [userId]
@@ -628,6 +628,11 @@ async function ensureDirectClientOrganization(userId) {
 
   const user = userResult.rows[0];
   if (!user) return null;
+
+  // Un partner n'est pas son propre client final.
+  // Cette fonction ne crée un dossier client automatique
+  // que pour les comptes clients directs Into The Shift.
+  if (String(user.role || "client").toLowerCase() !== "client") return null;
 
   const companyName = String(user.company_name || "").trim();
   if (!companyName) return null;
@@ -670,7 +675,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "project-no-duplicate-v5",
+    version: "partner-self-client-fix-v6",
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
@@ -1318,7 +1323,19 @@ app.get("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =>
 
     if (req.user.role !== "admin") {
       params.push(req.user.id);
-      whereClause += " AND o.created_by = $1";
+      whereClause += `
+        AND o.created_by = $1
+        AND NOT (
+          LOWER(TRIM(o.name)) = LOWER(TRIM(COALESCE(owner.company_name, '')))
+          AND (
+            COALESCE(o.contact_email, '') = COALESCE(owner.email, '')
+            OR COALESCE(o.contact_email, '') = ''
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM projects px WHERE px.organization_id = o.id
+          )
+        )
+      `;
     }
 
     const result = await pool.query(`
@@ -1349,6 +1366,7 @@ app.get("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =>
           '[]'
         ) AS projects
       FROM organizations o
+      LEFT JOIN users owner ON owner.id = o.created_by
       LEFT JOIN projects p ON p.organization_id = o.id
       LEFT JOIN campaigns c ON c.organization_id = o.id
       WHERE ${whereClause}
