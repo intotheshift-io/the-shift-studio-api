@@ -354,7 +354,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "project-status-publication-v6",
+    version: "project-status-published-only-v7",
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
@@ -1448,8 +1448,7 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
   const allowedStatuses = [
     "draft",
     "sent",
-    "published",
-    "results"
+    "published"
   ];
 
   if (status && !allowedStatuses.includes(status)) {
@@ -1457,10 +1456,13 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
   }
 
   try {
-    const finalStatus =
-      finalResultsUrl
-        ? "results"
-        : (status || "published");
+    const finalStatus = status || "published";
+    const normalizedShareUrl = finalStatus === "published" ? finalShareUrl : "";
+    const normalizedResultsUrl = finalStatus === "published" ? finalResultsUrl : "";
+
+    if (finalStatus === "published" && (!normalizedShareUrl || !normalizedResultsUrl)) {
+      return res.status(400).json({ error: "URL de diffusion et URL résultats obligatoires pour publier." });
+    }
 
     const result = await pool.query(
       `
@@ -1470,9 +1472,9 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
         share_url = $2,
         results_url = $3,
         published_at = CASE
-          WHEN $1 IN ('published','results')
-          THEN NOW()
-          ELSE published_at
+          WHEN $1 = 'published'
+          THEN COALESCE(published_at, NOW())
+          ELSE NULL
         END,
         updated_at = NOW()
       WHERE id = $4
@@ -1480,8 +1482,8 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
       `,
       [
         finalStatus,
-        finalShareUrl || null,
-        finalResultsUrl || null,
+        normalizedShareUrl || null,
+        normalizedResultsUrl || null,
         id
       ]
     );
@@ -1757,4 +1759,6 @@ initDb().then(() => {
     console.log(`API running on port ${PORT}`);
   });
 });
+
+
 
