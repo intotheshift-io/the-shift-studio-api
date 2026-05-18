@@ -239,6 +239,26 @@ async function initDb() {
   `);
 
   await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS share_url TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS results_url TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS published_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS current_step TEXT;
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS campaigns (
       id SERIAL PRIMARY KEY,
       project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
@@ -334,7 +354,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "admin-publication-urls-v2-creator-fields",
+    version: "project-resume-clone-v4",
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
@@ -346,6 +366,8 @@ app.get("/debug-version", (req, res) => {
     hasProjectOrganizationAutolink: true,
     hasProjectPublicationUrls: true,
     hasCreatorFields: true,
+    hasProjectCurrentStep: true,
+    hasProjectCloneRoute: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -653,79 +675,22 @@ app.get("/api/projects", auth, async (req, res) => {
         organizationPassationsPack: row.organization_passations_pack || "",
         organizationPassationsQuota: Number(row.organization_passations_quota || 0),
         organizationPassationsUsed: Number(row.organization_passations_used || 0),
-        organizationPassationsRemaining: Math.max(0, Number(row.organization_passations_quota || 0) - Number(row.organization_passations_used || 0)),
+        organizationPassationsRemaining: Math.max(
+          0,
+          Number(row.organization_passations_quota || 0) -
+          Number(row.organization_passations_used || 0)
+        ),
         shareUrl: row.share_url || "",
-        share_url: row.share_url || "",
         resultsUrl: row.results_url || "",
-        results_url: row.results_url || "",
         publishedAt: row.published_at || null,
-        currentStep: row.current_step || data.step || data.current_step || ""
+        currentStep: row.current_step || data.step || data.current_step || data.currentStep || ""
       };
     })
   });
 });
 
-app.get("/api/projects/:id", auth, async (req, res) => {
-  const { id } = req.params;
-  const result = await pool.query(
-    `SELECT p.*, o.name AS organization_name
-     FROM projects p
-     LEFT JOIN organizations o ON o.id = p.organization_id
-     WHERE p.id = $1 AND p.user_id = $2`,
-    [id, req.user.id]
-  );
-  if (!result.rows[0]) return res.status(404).json({ error: "Projet introuvable" });
-  const row = result.rows[0];
-  res.json({
-    project: {
-      ...row,
-      organizationName: row.organization_name || "",
-      shareUrl: row.share_url || "",
-      resultsUrl: row.results_url || "",
-      currentStep: row.current_step || row.data?.step || row.data?.current_step || ""
-    }
-  });
-});
-
-app.post("/api/projects/:id/clone", auth, async (req, res) => {
-  const { id } = req.params;
-  const originalResult = await pool.query(
-    `SELECT * FROM projects WHERE id = $1 AND user_id = $2`,
-    [id, req.user.id]
-  );
-  const original = originalResult.rows[0];
-  if (!original) return res.status(404).json({ error: "Projet introuvable" });
-
-  const allowedToClone = ["sent", "published", "results"].includes(String(original.status || "").toLowerCase());
-  if (!allowedToClone) {
-    return res.status(400).json({ error: "Le clonage est disponible après transmission ou publication." });
-  }
-
-  const clonedData = {
-    ...(original.data || {}),
-    clonedFromProjectId: original.id,
-    configTransmise: false,
-    config_transmise: false,
-    submitted: false,
-    status: "draft",
-    current_step: "questions",
-    step: "questions",
-    transmission: null
-  };
-
-  const titleBase = original.title || clonedData.title || clonedData.autodiagTitle || "Autodiagnostic";
-  const result = await pool.query(
-    `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step)
-     VALUES ($1, $2, 'draft', $3, $1, $4, 'questions')
-     RETURNING *`,
-    [req.user.id, `Copie de ${titleBase}`, clonedData, original.organization_id || null]
-  );
-
-  res.status(201).json({ project: result.rows[0] });
-});
-
-app.post("/api/projects"app.post("/api/projects", auth, async (req, res) => {
-  const { title, data, organizationId, status } = req.body;
+app.post("/api/projects", auth, async (req, res) => {
+  const { title, data, organizationId, status, projectId, currentStep } = req.body;
 
   const configSent =
     data?.configTransmise === true ||
@@ -736,6 +701,7 @@ app.post("/api/projects"app.post("/api/projects", auth, async (req, res) => {
     data?.payload?.submitted === true;
 
   const finalStatus = status || (configSent ? "sent" : "draft");
+  const finalStep = currentStep || data?.step || data?.current_step || data?.currentStep || null;
 
   let finalOrganizationId = organizationId || null;
 
@@ -743,20 +709,149 @@ app.post("/api/projects"app.post("/api/projects", auth, async (req, res) => {
     finalOrganizationId = await ensureDirectClientOrganization(req.user.id);
   }
 
+  if (projectId) {
+    const updateResult = await pool.query(
+      `UPDATE projects
+       SET title = COALESCE($1, title),
+           status = COALESCE($2, status),
+           data = COALESCE($3, data),
+           organization_id = COALESCE($4, organization_id),
+           current_step = COALESCE($5, current_step),
+           updated_at = NOW()
+       WHERE id = $6 AND user_id = $7
+       RETURNING *`,
+      [
+        title || null,
+        finalStatus,
+        data || null,
+        finalOrganizationId || null,
+        finalStep,
+        projectId,
+        req.user.id
+      ]
+    );
+
+    if (updateResult.rows[0]) {
+      return res.json({ project: updateResult.rows[0] });
+    }
+  }
+
   const result = await pool.query(
-    `INSERT INTO projects (user_id, title, status, data, created_by, organization_id)
-     VALUES ($1, $2, $3, $4, $1, $5)
+    `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step)
+     VALUES ($1, $2, $3, $4, $1, $5, $6)
      RETURNING *`,
     [
       req.user.id,
       title || "Nouveau projet",
       finalStatus,
       data || {},
-      finalOrganizationId || null
+      finalOrganizationId || null,
+      finalStep
     ]
   );
 
   res.json({ project: result.rows[0] });
+});
+
+app.get("/api/projects/:id", auth, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await pool.query(
+      `SELECT
+         p.*,
+         o.name AS organization_name,
+         o.passations_pack AS organization_passations_pack,
+         o.passations_quota AS organization_passations_quota,
+         o.passations_used AS organization_passations_used
+       FROM projects p
+       LEFT JOIN organizations o ON o.id = p.organization_id
+       WHERE p.id = $1 AND p.user_id = $2
+       LIMIT 1`,
+      [id, req.user.id]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const row = result.rows[0];
+    const data = row.data || {};
+
+    res.json({
+      project: {
+        ...row,
+        organizationName: row.organization_name || "",
+        organizationPassationsPack: row.organization_passations_pack || "",
+        organizationPassationsQuota: Number(row.organization_passations_quota || 0),
+        organizationPassationsUsed: Number(row.organization_passations_used || 0),
+        organizationPassationsRemaining: Math.max(
+          0,
+          Number(row.organization_passations_quota || 0) -
+          Number(row.organization_passations_used || 0)
+        ),
+        shareUrl: row.share_url || "",
+        resultsUrl: row.results_url || "",
+        publishedAt: row.published_at || null,
+        currentStep: row.current_step || data.step || data.current_step || data.currentStep || ""
+      }
+    });
+  } catch (err) {
+    console.error("GET /api/projects/:id", err);
+    res.status(500).json({ error: "Erreur chargement projet" });
+  }
+});
+
+app.post("/api/projects/:id/clone", auth, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const sourceResult = await pool.query(
+      `SELECT *
+       FROM projects
+       WHERE id = $1 AND user_id = $2
+       LIMIT 1`,
+      [id, req.user.id]
+    );
+
+    const source = sourceResult.rows[0];
+
+    if (!source) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    if (!["sent", "published", "results"].includes(String(source.status || "").toLowerCase())) {
+      return res.status(400).json({ error: "Le clonage est disponible après transmission ou publication." });
+    }
+
+    const clonedData = { ...(source.data || {}) };
+    clonedData.clonedFromProjectId = source.id;
+    clonedData.configTransmise = false;
+    clonedData.config_transmise = false;
+    clonedData.submitted = false;
+    clonedData.submitted_at = null;
+    clonedData.step = "questions";
+    clonedData.current_step = "questions";
+
+    const clonedTitle = `Copie de ${source.title || "Autodiagnostic"}`;
+
+    const result = await pool.query(
+      `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step)
+       VALUES ($1, $2, 'draft', $3, $1, $4, 'questions')
+       RETURNING *`,
+      [
+        req.user.id,
+        clonedTitle,
+        clonedData,
+        source.organization_id || null
+      ]
+    );
+
+    res.status(201).json({ project: result.rows[0] });
+  } catch (err) {
+    console.error("POST /api/projects/:id/clone", err);
+    res.status(500).json({ error: "Erreur clonage projet" });
+  }
 });
 
 app.put("/api/projects/:id", auth, async (req, res) => {
@@ -766,11 +861,13 @@ app.put("/api/projects/:id", auth, async (req, res) => {
     title,
     data,
     organizationId,
-    status
+    status,
+    currentStep
   } = req.body;
 
   let finalStatus = status || null;
   let finalOrganizationId = organizationId || null;
+  const finalStep = currentStep || data?.step || data?.current_step || data?.currentStep || null;
 
   const configSent =
     data?.configTransmise === true ||
@@ -778,11 +875,7 @@ app.put("/api/projects/:id", auth, async (req, res) => {
     data?.submitted === true;
 
   if (!finalStatus) {
-    if (configSent) {
-      finalStatus = "sent";
-    } else {
-      finalStatus = "draft";
-    }
+    finalStatus = configSent ? "sent" : "draft";
   }
 
   if (!finalOrganizationId) {
@@ -795,14 +888,16 @@ app.put("/api/projects/:id", auth, async (req, res) => {
          data = COALESCE($2, data),
          organization_id = COALESCE($3, organization_id),
          status = COALESCE($4, status),
+         current_step = COALESCE($5, current_step),
          updated_at = NOW()
-     WHERE id = $5 AND user_id = $6
+     WHERE id = $6 AND user_id = $7
      RETURNING *`,
     [
       title || null,
       data || null,
       finalOrganizationId || null,
       finalStatus,
+      finalStep,
       id,
       req.user.id
     ]
@@ -1128,10 +1223,6 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
       p.created_at,
       p.updated_at,
       p.organization_id,
-      p.share_url,
-      p.results_url,
-      p.published_at,
-      p.current_step,
       o.name AS organization_name,
       o.passations_pack AS organization_passations_pack,
       o.passations_quota AS organization_passations_quota,
@@ -1201,12 +1292,6 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
         trialEndsAt: row.trial_ends_at,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
-        shareUrl: row.share_url || "",
-        share_url: row.share_url || "",
-        resultsUrl: row.results_url || "",
-        results_url: row.results_url || "",
-        publishedAt: row.published_at || null,
-        currentStep: row.current_step || data.step || data.current_step || "",
         clientName:
           row.organization_name ||
           row.company_name ||
@@ -1246,7 +1331,7 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
   const { id } = req.params;
   const { status } = req.body;
 
-  const allowedStatuses = ["draft", "sent", "published", "results", "archived"];
+  const allowedStatuses = ["draft", "sent", "published", "results"];
 
   if (!allowedStatuses.includes(status)) {
     return res.status(400).json({ error: "Statut invalide" });
@@ -1295,8 +1380,7 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
     "draft",
     "sent",
     "published",
-    "results",
-    "archived"
+    "results"
   ];
 
   if (status && !allowedStatuses.includes(status)) {
