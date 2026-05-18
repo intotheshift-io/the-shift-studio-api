@@ -1526,6 +1526,67 @@ app.delete("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
     res.status(500).json({ error: "Erreur suppression projet" });
   }
 });
+
+app.post("/api/transmissions/client-recap", auth, async (req, res) => {
+  const {
+    clientInfo,
+    client_info,
+    entreprise,
+    titre_autodiag,
+    titre_repondants,
+    pdf_html,
+    recap_html,
+    subject
+  } = req.body || {};
+
+  const info = clientInfo || client_info || {};
+  const to = String(info.email || req.body?.email || "").trim();
+
+  if (!to) {
+    return res.status(400).json({ ok: false, error: "Email client requis" });
+  }
+
+  const title = String(titre_repondants || titre_autodiag || "votre autodiagnostic").trim();
+  const company = String(entreprise || info.entreprise || "").trim();
+  const html = recap_html || pdf_html;
+
+  if (!html) {
+    return res.status(400).json({ ok: false, error: "Contenu récapitulatif requis" });
+  }
+
+  const mailSubject = subject || `Récapitulatif de votre configuration Shift Studio — ${title}`;
+
+  const text =
+`Bonjour ${info.prenom || ""},
+
+Votre configuration Shift Studio a bien été transmise à Into The Shift.
+
+Vous trouverez ci-dessous le récapitulatif des choix renseignés pour ${title}${company ? " — " + company : ""}.
+
+Pour toute modification, contactez contact@intotheshift.io.
+
+L’équipe Into The Shift`;
+
+  const mailResult = await sendTransactionalEmail({
+    to,
+    subject: mailSubject,
+    text,
+    html
+  });
+
+  console.log("CLIENT RECAP EMAIL STATUS", {
+    email: to,
+    emailSent: mailResult.sent,
+    emailStatus: mailResult.reason || "SENT"
+  });
+
+  res.json({
+    ok: mailResult.sent,
+    emailSent: mailResult.sent,
+    emailStatus: mailResult.reason || "SENT"
+  });
+});
+
 app.post("/api/admin/test-email", auth, requireAdmin, async (req, res) => {
   const { email } = req.body;
 
