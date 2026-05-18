@@ -276,7 +276,17 @@ async function initDb() {
 
   await pool.query(`
     ALTER TABLE projects
-    ADD COLUMN IF NOT EXISTS end_alert_sent_at TIMESTAMP;
+    ADD COLUMN IF NOT EXISTS end_alert_7_sent_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS end_alert_2_sent_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS unpublished_alert_sent_at TIMESTAMP;
   `);
 
   await pool.query(`
@@ -357,6 +367,13 @@ function extractCampaignEndDate(data = {}, body = {}) {
   );
 }
 
+function formatDateLongFr(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" });
+}
+
 async function autoUnpublishExpiredProjects() {
   await pool.query(`
     UPDATE projects
@@ -367,6 +384,214 @@ async function autoUnpublishExpiredProjects() {
       AND campaign_end_date IS NOT NULL
       AND campaign_end_date < CURRENT_DATE
   `);
+}
+
+function getCampaignAlertRecipient(row) {
+  if (row.partner_email) {
+    return {
+      to: row.partner_email,
+      name:
+        row.partner_company_name ||
+        `${row.partner_first_name || ""} ${row.partner_last_name || ""}`.trim() ||
+        "partenaire"
+    };
+  }
+
+  return {
+    to: row.contact_email || row.user_email || "",
+    name:
+      row.contact_name ||
+      row.user_company_name ||
+      `${row.user_first_name || ""} ${row.user_last_name || ""}`.trim() ||
+      ""
+  };
+}
+
+function buildCampaignAlertEmail({ type, row, daysBefore, recipientName }) {
+  const title = row.title || "votre autodiagnostic";
+  const endDate = formatDateLongFr(row.campaign_end_date);
+  const clientName = row.organization_name || row.user_company_name || "—";
+  const hello = recipientName || "";
+
+  if (type === "unpublished") {
+    return {
+      subject: `Campagne dépubliée — ${title}`,
+      text:
+`Bonjour ${hello},
+
+La campagne d’autodiagnostic "${title}" est maintenant terminée et a été dépubliée.
+
+Client concerné : ${clientName}
+Date de fin de campagne : ${endDate}
+
+Le lien de passation n’est plus mis en avant. L’accès aux résultats reste disponible si l’URL résultats a été renseignée.
+
+Pour relancer ou prolonger la campagne, contactez contact@intotheshift.io.
+
+L’équipe Into The Shift`,
+      html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.5">
+  <p>Bonjour ${escapeHtml(hello)},</p>
+  <p>La campagne d’autodiagnostic <strong>${escapeHtml(title)}</strong> est maintenant terminée et a été dépubliée.</p>
+  <p><strong>Client concerné :</strong> ${escapeHtml(clientName)}<br>
+  <strong>Date de fin de campagne :</strong> ${escapeHtml(endDate)}</p>
+  <p>Le lien de passation n’est plus mis en avant. L’accès aux résultats reste disponible si l’URL résultats a été renseignée.</p>
+  <p>Pour relancer ou prolonger la campagne, contactez <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p>
+  <p>L’équipe Into The Shift</p>
+</div>`
+    };
+  }
+
+  return {
+    subject: `Votre autodiagnostic se termine dans ${daysBefore} jours — ${title}`,
+    text:
+`Bonjour ${hello},
+
+Votre campagne d’autodiagnostic "${title}" se termine dans ${daysBefore} jours.
+
+Client concerné : ${clientName}
+Date de fin prévue : ${endDate}
+
+Après cette date, le lien de passation ne sera plus mis en avant. L’accès aux résultats restera disponible si l’URL résultats a été renseignée.
+
+Pour prolonger la campagne ou modifier les dates, contactez contact@intotheshift.io.
+
+L’équipe Into The Shift`,
+    html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.5">
+  <p>Bonjour ${escapeHtml(hello)},</p>
+  <p>Votre campagne d’autodiagnostic <strong>${escapeHtml(title)}</strong> se termine dans <strong>${daysBefore} jours</strong>.</p>
+  <p><strong>Client concerné :</strong> ${escapeHtml(clientName)}<br>
+  <strong>Date de fin prévue :</strong> ${escapeHtml(endDate)}</p>
+  <p>Après cette date, le lien de passation ne sera plus mis en avant. L’accès aux résultats restera disponible si l’URL résultats a été renseignée.</p>
+  <p>Pour prolonger la campagne ou modifier les dates, contactez <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p>
+  <p>L’équipe Into The Shift</p>
+</div>`
+  };
+}
+
+async function getCampaignAlertRows({ type, daysBefore }) {
+  if (type === "unpublished") {
+    return pool.query(`
+      SELECT
+        p.id,
+        p.title,
+        p.campaign_end_date,
+        p.results_url,
+        p.share_url,
+        o.name AS organization_name,
+        o.contact_email,
+        o.contact_name,
+        client.email AS user_email,
+        client.first_name AS user_first_name,
+        client.last_name AS user_last_name,
+        client.company_name AS user_company_name,
+        partner.email AS partner_email,
+        partner.first_name AS partner_first_name,
+        partner.last_name AS partner_last_name,
+        partner.company_name AS partner_company_name
+      FROM projects p
+      LEFT JOIN users client ON client.id = p.user_id
+      LEFT JOIN organizations o ON o.id = p.organization_id
+      LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+      WHERE p.status = 'unpublished'
+        AND p.campaign_end_date IS NOT NULL
+        AND p.unpublished_alert_sent_at IS NULL
+      ORDER BY p.campaign_end_date ASC
+    `);
+  }
+
+  const sentColumn = Number(daysBefore) === 2 ? "end_alert_2_sent_at" : "end_alert_7_sent_at";
+
+  return pool.query(`
+    SELECT
+      p.id,
+      p.title,
+      p.campaign_end_date,
+      p.results_url,
+      p.share_url,
+      o.name AS organization_name,
+      o.contact_email,
+      o.contact_name,
+      client.email AS user_email,
+      client.first_name AS user_first_name,
+      client.last_name AS user_last_name,
+      client.company_name AS user_company_name,
+      partner.email AS partner_email,
+      partner.first_name AS partner_first_name,
+      partner.last_name AS partner_last_name,
+      partner.company_name AS partner_company_name
+    FROM projects p
+    LEFT JOIN users client ON client.id = p.user_id
+    LEFT JOIN organizations o ON o.id = p.organization_id
+    LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+    WHERE p.status = 'published'
+      AND p.campaign_end_date IS NOT NULL
+      AND p.${sentColumn} IS NULL
+      AND p.campaign_end_date = CURRENT_DATE + ($1 || ' days')::interval
+    ORDER BY p.campaign_end_date ASC
+  `, [daysBefore]);
+}
+
+async function processCampaignAlerts({ type, daysBefore }) {
+  const result = await getCampaignAlertRows({ type, daysBefore });
+  const sent = [];
+  const skipped = [];
+
+  for (const row of result.rows) {
+    const recipient = getCampaignAlertRecipient(row);
+
+    if (!recipient.to) {
+      skipped.push({ id: row.id, reason: "NO_RECIPIENT" });
+      continue;
+    }
+
+    const mail = buildCampaignAlertEmail({
+      type,
+      row,
+      daysBefore,
+      recipientName: recipient.name
+    });
+
+    const mailResult = await sendTransactionalEmail({
+      to: recipient.to,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html
+    });
+
+    if (!mailResult.sent) {
+      skipped.push({ id: row.id, to: recipient.to, reason: mailResult.reason || "SEND_FAILED" });
+      continue;
+    }
+
+    if (type === "unpublished") {
+      await pool.query(`UPDATE projects SET unpublished_alert_sent_at = NOW() WHERE id = $1`, [row.id]);
+    } else if (Number(daysBefore) === 2) {
+      await pool.query(`UPDATE projects SET end_alert_2_sent_at = NOW() WHERE id = $1`, [row.id]);
+    } else {
+      await pool.query(`UPDATE projects SET end_alert_7_sent_at = NOW() WHERE id = $1`, [row.id]);
+    }
+
+    sent.push({ id: row.id, to: recipient.to, type, daysBefore: type === "unpublished" ? null : daysBefore });
+  }
+
+  return { sent, skipped };
+}
+
+async function runCampaignAlerts() {
+  const alert7 = await processCampaignAlerts({ type: "ending", daysBefore: 7 });
+  const alert2 = await processCampaignAlerts({ type: "ending", daysBefore: 2 });
+  await autoUnpublishExpiredProjects();
+  const unpublished = await processCampaignAlerts({ type: "unpublished" });
+
+  return {
+    alert7,
+    alert2,
+    unpublished,
+    totalSent: alert7.sent.length + alert2.sent.length + unpublished.sent.length,
+    totalSkipped: alert7.skipped.length + alert2.skipped.length + unpublished.skipped.length
+  };
 }
 
 async function ensureDirectClientOrganization(userId) {
@@ -435,9 +660,6 @@ app.get("/debug-version", (req, res) => {
     hasCreatorFields: true,
     hasProjectCurrentStep: true,
     hasProjectCloneRoute: true,
-    hasCampaignDates: true,
-    hasUnpublishedStatus: true,
-    hasCampaignEndAlerts: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -722,7 +944,6 @@ app.patch("/api/me/password", auth, async (req, res) => {
 });
 
 app.get("/api/projects", auth, async (req, res) => {
-  await autoUnpublishExpiredProjects();
   const result = await pool.query(
     `SELECT
        p.*,
@@ -920,7 +1141,7 @@ app.post("/api/projects/:id/clone", auth, async (req, res) => {
       return res.status(404).json({ error: "Projet introuvable" });
     }
 
-    if (!["sent", "published", "results"].includes(String(source.status || "").toLowerCase())) {
+    if (!["sent", "published", "unpublished", "results"].includes(String(source.status || "").toLowerCase())) {
       return res.status(400).json({ error: "Le clonage est disponible après transmission ou publication." });
     }
 
@@ -1331,14 +1552,6 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
       p.created_at,
       p.updated_at,
       p.organization_id,
-      p.created_by,
-      p.share_url,
-      p.results_url,
-      p.published_at,
-      p.current_step,
-      p.campaign_start_date,
-      p.campaign_end_date,
-      p.unpublished_at,
       o.name AS organization_name,
       o.passations_pack AS organization_passations_pack,
       o.passations_quota AS organization_passations_quota,
@@ -1382,21 +1595,6 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
           row.title ||
           "Autodiag sans titre",
         status: row.status || data.status || "brouillon",
-        share_url: row.share_url || "",
-        shareUrl: row.share_url || "",
-        results_url: row.results_url || "",
-        resultsUrl: row.results_url || "",
-        published_at: row.published_at || null,
-        publishedAt: row.published_at || null,
-        unpublished_at: row.unpublished_at || null,
-        unpublishedAt: row.unpublished_at || null,
-        current_step: row.current_step || data.current_step || data.currentStep || data.step || "",
-        currentStep: row.current_step || data.current_step || data.currentStep || data.step || "",
-        campaign_start_date: row.campaign_start_date || data.campaign_start_date || data.campaignStartDate || data.parametrage?.date_lancement || null,
-        campaignStartDate: row.campaign_start_date || data.campaign_start_date || data.campaignStartDate || data.parametrage?.date_lancement || null,
-        campaign_end_date: row.campaign_end_date || data.campaign_end_date || data.campaignEndDate || data.parametrage?.date_cloture || null,
-        campaignEndDate: row.campaign_end_date || data.campaign_end_date || data.campaignEndDate || data.parametrage?.date_cloture || null,
-        created_by: row.created_by || null,
         pack:
           row.organization_passations_pack ||
           data.pack ||
@@ -1520,6 +1718,10 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
     return res.status(400).json({ error: "Statut invalide" });
   }
 
+  if (finalCampaignStartDate && finalCampaignEndDate && finalCampaignStartDate > finalCampaignEndDate) {
+    return res.status(400).json({ error: "La date de début ne peut pas être postérieure à la date de fin." });
+  }
+
   if (finalStatus === "published" && (!finalShareUrl || !finalResultsUrl)) {
     return res.status(400).json({ error: "URL de diffusion et URL résultats obligatoires pour publier." });
   }
@@ -1535,9 +1737,11 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
     }
 
     const existing = existingResult.rows[0];
+
     const nextShareUrl = finalStatus === "published"
       ? finalShareUrl
       : (finalStatus === "unpublished" ? (finalShareUrl || existing.share_url || "") : null);
+
     const nextResultsUrl = (finalStatus === "published" || finalStatus === "unpublished")
       ? (finalResultsUrl || existing.results_url || "")
       : null;
@@ -1581,88 +1785,41 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
 });
 
 app.post("/api/admin/campaign-alerts/send", auth, requireAdmin, async (req, res) => {
-  const daysBefore = Number(req.body?.daysBefore || 7);
-
   try {
-    const result = await pool.query(
-      `SELECT
-         p.id,
-         p.title,
-         p.campaign_end_date,
-         p.end_alert_sent_at,
-         p.results_url,
-         p.share_url,
-         u.email,
-         u.first_name,
-         o.contact_email,
-         o.contact_name
-       FROM projects p
-       LEFT JOIN users u ON u.id = p.user_id
-       LEFT JOIN organizations o ON o.id = p.organization_id
-       WHERE p.status = 'published'
-         AND p.campaign_end_date IS NOT NULL
-         AND p.end_alert_sent_at IS NULL
-         AND p.campaign_end_date >= CURRENT_DATE
-         AND p.campaign_end_date <= CURRENT_DATE + ($1 || ' days')::interval
-       ORDER BY p.campaign_end_date ASC`,
-      [daysBefore]
-    );
+    const mode = String(req.body?.mode || "all").toLowerCase();
+    let result;
 
-    const sent = [];
-    const skipped = [];
-
-    for (const row of result.rows) {
-      const to = row.contact_email || row.email;
-      if (!to) {
-        skipped.push({ id: row.id, reason: "NO_EMAIL" });
-        continue;
-      }
-
-      const endDate = row.campaign_end_date
-        ? new Date(row.campaign_end_date).toLocaleDateString("fr-FR")
-        : "prochainement";
-
-      const mailResult = await sendTransactionalEmail({
-        to,
-        subject: `Votre autodiagnostic se termine bientôt — ${row.title || "Shift Studio"}`,
-        text:
-`Bonjour ${row.first_name || row.contact_name || ""},
-
-Votre campagne d’autodiagnostic "${row.title || "Shift Studio"}" arrive bientôt à son terme.
-
-Date de fin prévue : ${endDate}
-
-Après cette date, le lien de passation ne sera plus mis en avant côté client. L’accès aux résultats restera disponible si l’URL résultats a été renseignée.
-
-Pour prolonger la campagne ou modifier les dates, contactez contact@intotheshift.io.
-
-L’équipe Into The Shift`,
-        html:
-`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.5">
-  <p>Bonjour ${escapeHtml(row.first_name || row.contact_name || "")},</p>
-  <p>Votre campagne d’autodiagnostic <strong>${escapeHtml(row.title || "Shift Studio")}</strong> arrive bientôt à son terme.</p>
-  <p><strong>Date de fin prévue :</strong> ${escapeHtml(endDate)}</p>
-  <p>Après cette date, le lien de passation ne sera plus mis en avant côté client. L’accès aux résultats restera disponible si l’URL résultats a été renseignée.</p>
-  <p>Pour prolonger la campagne ou modifier les dates, contactez <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p>
-  <p>L’équipe Into The Shift</p>
-</div>`
-      });
-
-      if (mailResult.sent) {
-        await pool.query(
-          `UPDATE projects SET end_alert_sent_at = NOW() WHERE id = $1`,
-          [row.id]
-        );
-        sent.push({ id: row.id, to });
-      } else {
-        skipped.push({ id: row.id, to, reason: mailResult.reason || "SEND_FAILED" });
-      }
+    if (mode === "7" || mode === "j-7") {
+      result = { alert7: await processCampaignAlerts({ type: "ending", daysBefore: 7 }) };
+    } else if (mode === "2" || mode === "j-2") {
+      result = { alert2: await processCampaignAlerts({ type: "ending", daysBefore: 2 }) };
+    } else if (mode === "unpublished" || mode === "depublie") {
+      await autoUnpublishExpiredProjects();
+      result = { unpublished: await processCampaignAlerts({ type: "unpublished" }) };
+    } else {
+      result = await runCampaignAlerts();
     }
 
-    res.json({ ok: true, sent, skipped });
+    res.json({ ok: true, ...result });
   } catch (err) {
-    console.error("Erreur alertes fin de campagne", err);
-    res.status(500).json({ error: "Erreur alertes fin de campagne" });
+    console.error("Erreur alertes campagne", err);
+    res.status(500).json({ error: "Erreur alertes campagne" });
+  }
+});
+
+app.post("/api/campaign-alerts/run", async (req, res) => {
+  const secret = req.headers["x-alert-secret"] || req.query.secret || req.body?.secret || "";
+
+  if (!ALERT_CRON_SECRET || secret !== ALERT_CRON_SECRET) {
+    return res.status(403).json({ error: "Accès refusé" });
+  }
+
+  try {
+    const result = await runCampaignAlerts();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error("Erreur run alertes campagne", err);
+    res.status(500).json({ error: "Erreur alertes campagne" });
   }
 });
 
@@ -1922,5 +2079,13 @@ initDb().then(() => {
   app.listen(PORT, () => {
     console.log(`API running on port ${PORT}`);
   });
+
+  setTimeout(() => {
+    runCampaignAlerts().catch((err) => console.error("Erreur alertes campagne au démarrage", err));
+  }, 30 * 1000);
+
+  setInterval(() => {
+    runCampaignAlerts().catch((err) => console.error("Erreur alertes campagne planifiées", err));
+  }, 6 * 60 * 60 * 1000);
 });
 
