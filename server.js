@@ -675,7 +675,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "partner-self-client-fix-v6",
+    version: "cockpit-admin-partner-fix-v7",
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
@@ -1358,9 +1358,23 @@ app.get("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =>
               'title', p.title,
               'status', p.status,
               'updated_at', p.updated_at,
+              'created_at', p.created_at,
+              'data', p.data,
+              'configTransmise', COALESCE((p.data->>'configTransmise')::boolean, false),
+              'config_transmise', COALESCE((p.data->>'config_transmise')::boolean, false),
+              'submitted', COALESCE((p.data->>'submitted')::boolean, false),
               'share_url', p.share_url,
+              'shareUrl', p.share_url,
               'results_url', p.results_url,
-              'published_at', p.published_at
+              'resultsUrl', p.results_url,
+              'campaign_start_date', p.campaign_start_date,
+              'campaignStartDate', p.campaign_start_date,
+              'campaign_end_date', p.campaign_end_date,
+              'campaignEndDate', p.campaign_end_date,
+              'published_at', p.published_at,
+              'publishedAt', p.published_at,
+              'unpublished_at', p.unpublished_at,
+              'unpublishedAt', p.unpublished_at
             )
           ) FILTER (WHERE p.id IS NOT NULL),
           '[]'
@@ -1510,11 +1524,23 @@ app.get("/api/admin/organizations", auth, requireAdmin, async (req, res) => {
         u.first_name AS owner_first_name,
         u.last_name AS owner_last_name,
         u.company_name AS owner_company_name,
+        u.role AS owner_role,
         COUNT(DISTINCT p.id)::int AS projects_count
       FROM organizations o
       LEFT JOIN users u ON u.id = o.created_by
       LEFT JOIN projects p ON p.organization_id = o.id
       WHERE o.type = 'client'
+        AND NOT (
+          COALESCE(u.role, '') = 'partner'
+          AND LOWER(TRIM(o.name)) = LOWER(TRIM(COALESCE(u.company_name, '')))
+          AND (
+            COALESCE(o.contact_email, '') = COALESCE(u.email, '')
+            OR COALESCE(o.contact_email, '') = ''
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM projects px WHERE px.organization_id = o.id
+          )
+        )
       GROUP BY o.id, u.id
       ORDER BY o.created_at DESC
     `);
@@ -1523,6 +1549,8 @@ app.get("/api/admin/organizations", auth, requireAdmin, async (req, res) => {
       organizations: result.rows.map((row) => ({
         ...formatOrganization(row),
         ownerEmail: row.owner_email || "",
+        ownerRole: row.owner_role || "",
+        ownerCompanyName: row.owner_company_name || "",
         ownerName:
           `${row.owner_first_name || ""} ${row.owner_last_name || ""}`.trim() ||
           row.owner_company_name ||
@@ -1635,6 +1663,12 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
       p.trial_ends_at,
       p.created_at,
       p.updated_at,
+      p.share_url,
+      p.results_url,
+      p.published_at,
+      p.unpublished_at,
+      p.campaign_start_date,
+      p.campaign_end_date,
       p.organization_id,
       o.name AS organization_name,
       o.passations_pack AS organization_passations_pack,
@@ -1705,6 +1739,18 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
         trialEndsAt: row.trial_ends_at,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        share_url: row.share_url || "",
+        shareUrl: row.share_url || "",
+        results_url: row.results_url || "",
+        resultsUrl: row.results_url || "",
+        published_at: row.published_at || null,
+        publishedAt: row.published_at || null,
+        unpublished_at: row.unpublished_at || null,
+        unpublishedAt: row.unpublished_at || null,
+        campaign_start_date: row.campaign_start_date || data.campaign_start_date || data.parametrage?.date_lancement || null,
+        campaignStartDate: row.campaign_start_date || data.campaignStartDate || data.parametrage?.date_lancement || null,
+        campaign_end_date: row.campaign_end_date || data.campaign_end_date || data.parametrage?.date_cloture || null,
+        campaignEndDate: row.campaign_end_date || data.campaignEndDate || data.parametrage?.date_cloture || null,
         clientName:
           row.organization_name ||
           row.company_name ||
