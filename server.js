@@ -20,6 +20,7 @@ const SMTP_SECURE = String(process.env.SMTP_SECURE || "false") === "true";
 const SMTP_USER = process.env.SMTP_USER || "";
 const SMTP_PASS = process.env.SMTP_PASS || "";
 const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER || "contact@intotheshift.io";
+const ALERT_CRON_SECRET = process.env.ALERT_CRON_SECRET || "";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -259,6 +260,26 @@ async function initDb() {
   `);
 
   await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS campaign_start_date DATE;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS campaign_end_date DATE;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS unpublished_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS end_alert_sent_at TIMESTAMP;
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS campaigns (
       id SERIAL PRIMARY KEY,
       project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
@@ -300,6 +321,52 @@ function requirePartnerOrAdmin(req, res, next) {
   }
 
   next();
+}
+
+
+function normalizeDateValue(value) {
+  if (!value) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+function getProjectParamData(data = {}) {
+  if (!data || typeof data !== "object") return {};
+  return data.parametrage || data.params || data.settings || data.meta || {};
+}
+
+function extractCampaignStartDate(data = {}, body = {}) {
+  const param = getProjectParamData(data);
+  return normalizeDateValue(
+    body.campaignStartDate || body.campaign_start_date || body.startDate || body.start_date ||
+    data.campaignStartDate || data.campaign_start_date || data.startDate || data.start_date ||
+    data.date_lancement || data.dateLancement || param.date_lancement || param.dateLancement || param.start_date
+  );
+}
+
+function extractCampaignEndDate(data = {}, body = {}) {
+  const param = getProjectParamData(data);
+  return normalizeDateValue(
+    body.campaignEndDate || body.campaign_end_date || body.endDate || body.end_date ||
+    data.campaignEndDate || data.campaign_end_date || data.endDate || data.end_date ||
+    data.date_cloture || data.dateCloture || param.date_cloture || param.dateCloture || param.end_date
+  );
+}
+
+async function autoUnpublishExpiredProjects() {
+  await pool.query(`
+    UPDATE projects
+    SET status = 'unpublished',
+        unpublished_at = COALESCE(unpublished_at, NOW()),
+        updated_at = NOW()
+    WHERE status = 'published'
+      AND campaign_end_date IS NOT NULL
+      AND campaign_end_date < CURRENT_DATE
+  `);
 }
 
 async function ensureDirectClientOrganization(userId) {
@@ -354,7 +421,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "project-status-published-only-v7",
+    version: "project-no-duplicate-v5",
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
@@ -368,6 +435,9 @@ app.get("/debug-version", (req, res) => {
     hasCreatorFields: true,
     hasProjectCurrentStep: true,
     hasProjectCloneRoute: true,
+    hasCampaignDates: true,
+    hasUnpublishedStatus: true,
+    hasCampaignEndAlerts: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -652,6 +722,7 @@ app.patch("/api/me/password", auth, async (req, res) => {
 });
 
 app.get("/api/projects", auth, async (req, res) => {
+  await autoUnpublishExpiredProjects();
   const result = await pool.query(
     `SELECT
        p.*,
@@ -683,6 +754,11 @@ app.get("/api/projects", auth, async (req, res) => {
         shareUrl: row.share_url || "",
         resultsUrl: row.results_url || "",
         publishedAt: row.published_at || null,
+        unpublishedAt: row.unpublished_at || null,
+        campaignStartDate: row.campaign_start_date || data.campaignStartDate || data.campaign_start_date || data.parametrage?.date_lancement || null,
+        campaignEndDate: row.campaign_end_date || data.campaignEndDate || data.campaign_end_date || data.parametrage?.date_cloture || null,
+        campaign_start_date: row.campaign_start_date || data.campaign_start_date || data.parametrage?.date_lancement || null,
+        campaign_end_date: row.campaign_end_date || data.campaign_end_date || data.parametrage?.date_cloture || null,
         currentStep: row.current_step || data.step || data.current_step || data.currentStep || ""
       };
     })
@@ -707,22 +783,20 @@ app.post("/api/projects", auth, async (req, res) => {
     data?.configTransmise === true ||
     data?.config_transmise === true ||
     data?.submitted === true ||
-    data?.status === "sent" ||
-    data?.transmission?.status === "sent" ||
     data?.payload?.configTransmise === true ||
     data?.payload?.config_transmise === true ||
     data?.payload?.submitted === true;
 
   const finalStatus = status || (configSent ? "sent" : "draft");
   const finalStep = currentStep || data?.step || data?.current_step || data?.currentStep || null;
+  const finalCampaignStartDate = extractCampaignStartDate(data || {}, req.body || {});
+  const finalCampaignEndDate = extractCampaignEndDate(data || {}, req.body || {});
 
-  let finalOrganizationId = organizationId || data?.organizationId || data?.organization_id || null;
+  let finalOrganizationId = organizationId || null;
 
   if (!finalOrganizationId) {
     finalOrganizationId = await ensureDirectClientOrganization(req.user.id);
   }
-
-  const titleForSave = title || data?.autodiagTitle || data?.title || data?.titre || "Nouveau projet";
 
   if (projectId) {
     const updateResult = await pool.query(
@@ -732,15 +806,19 @@ app.post("/api/projects", auth, async (req, res) => {
            data = COALESCE($3, data),
            organization_id = COALESCE($4, organization_id),
            current_step = COALESCE($5, current_step),
+           campaign_start_date = COALESCE($6, campaign_start_date),
+           campaign_end_date = COALESCE($7, campaign_end_date),
            updated_at = NOW()
-       WHERE id = $6 AND user_id = $7
+       WHERE id = $8 AND user_id = $9
        RETURNING *`,
       [
-        titleForSave || null,
+        title || null,
         finalStatus,
         data || null,
         finalOrganizationId || null,
         finalStep,
+        finalCampaignStartDate,
+        finalCampaignEndDate,
         projectId,
         req.user.id
       ]
@@ -751,57 +829,19 @@ app.post("/api/projects", auth, async (req, res) => {
     }
   }
 
-  // Si le navigateur n'a plus l'id du projet, on évite de créer un doublon :
-  // on reprend le dernier brouillon/trial du même utilisateur, surtout lors de la transmission.
-  const reusableResult = await pool.query(
-    `SELECT id
-     FROM projects
-     WHERE user_id = $1
-       AND COALESCE(status, 'draft') IN ('draft','trial')
-     ORDER BY updated_at DESC
-     LIMIT 1`,
-    [req.user.id]
-  );
-
-  if (reusableResult.rows[0]) {
-    const reusableId = reusableResult.rows[0].id;
-    const updateResult = await pool.query(
-      `UPDATE projects
-       SET title = COALESCE($1, title),
-           status = $2,
-           data = COALESCE($3, data),
-           organization_id = COALESCE($4, organization_id),
-           current_step = COALESCE($5, current_step),
-           updated_at = NOW()
-       WHERE id = $6 AND user_id = $7
-       RETURNING *`,
-      [
-        titleForSave,
-        finalStatus,
-        data || null,
-        finalOrganizationId || null,
-        finalStep,
-        reusableId,
-        req.user.id
-      ]
-    );
-
-    if (updateResult.rows[0]) {
-      return res.json({ project: updateResult.rows[0] });
-    }
-  }
-
   const result = await pool.query(
-    `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step)
-     VALUES ($1, $2, $3, $4, $1, $5, $6)
+    `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step, campaign_start_date, campaign_end_date)
+     VALUES ($1, $2, $3, $4, $1, $5, $6, $7, $8)
      RETURNING *`,
     [
       req.user.id,
-      titleForSave,
+      title || "Nouveau projet",
       finalStatus,
       data || {},
       finalOrganizationId || null,
-      finalStep
+      finalStep,
+      finalCampaignStartDate,
+      finalCampaignEndDate
     ]
   );
 
@@ -848,6 +888,11 @@ app.get("/api/projects/:id", auth, async (req, res) => {
         shareUrl: row.share_url || "",
         resultsUrl: row.results_url || "",
         publishedAt: row.published_at || null,
+        unpublishedAt: row.unpublished_at || null,
+        campaignStartDate: row.campaign_start_date || data.campaignStartDate || data.campaign_start_date || data.parametrage?.date_lancement || null,
+        campaignEndDate: row.campaign_end_date || data.campaignEndDate || data.campaign_end_date || data.parametrage?.date_cloture || null,
+        campaign_start_date: row.campaign_start_date || data.campaign_start_date || data.parametrage?.date_lancement || null,
+        campaign_end_date: row.campaign_end_date || data.campaign_end_date || data.parametrage?.date_cloture || null,
         currentStep: row.current_step || data.step || data.current_step || data.currentStep || ""
       }
     });
@@ -923,6 +968,8 @@ app.put("/api/projects/:id", auth, async (req, res) => {
   let finalStatus = status || null;
   let finalOrganizationId = organizationId || null;
   const finalStep = currentStep || data?.step || data?.current_step || data?.currentStep || null;
+  const finalCampaignStartDate = extractCampaignStartDate(data || {}, req.body || {});
+  const finalCampaignEndDate = extractCampaignEndDate(data || {}, req.body || {});
 
   const configSent =
     data?.configTransmise === true ||
@@ -944,8 +991,10 @@ app.put("/api/projects/:id", auth, async (req, res) => {
          organization_id = COALESCE($3, organization_id),
          status = COALESCE($4, status),
          current_step = COALESCE($5, current_step),
+         campaign_start_date = COALESCE($6, campaign_start_date),
+         campaign_end_date = COALESCE($7, campaign_end_date),
          updated_at = NOW()
-     WHERE id = $6 AND user_id = $7
+     WHERE id = $8 AND user_id = $9
      RETURNING *`,
     [
       title || null,
@@ -953,6 +1002,8 @@ app.put("/api/projects/:id", auth, async (req, res) => {
       finalOrganizationId || null,
       finalStatus,
       finalStep,
+      finalCampaignStartDate,
+      finalCampaignEndDate,
       id,
       req.user.id
     ]
@@ -1060,6 +1111,7 @@ app.post("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =
 });
 
 app.get("/api/admin/summary", auth, requireAdmin, async (req, res) => {
+  await autoUnpublishExpiredProjects();
   const [users, clients, partners, projects, submitted, orgs, draftProjects, publishedProjects, resultsProjects, waitingPublication, withoutResults] = await Promise.all([
     pool.query(`SELECT COUNT(*)::int AS count FROM users`),
     pool.query(`SELECT COUNT(*)::int AS count FROM users WHERE COALESCE(role, 'client') = 'client'`),
@@ -1268,6 +1320,7 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
 });
 
 app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
+  await autoUnpublishExpiredProjects();
   const result = await pool.query(`
     SELECT
       p.id,
@@ -1283,6 +1336,9 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
       p.results_url,
       p.published_at,
       p.current_step,
+      p.campaign_start_date,
+      p.campaign_end_date,
+      p.unpublished_at,
       o.name AS organization_name,
       o.passations_pack AS organization_passations_pack,
       o.passations_quota AS organization_passations_quota,
@@ -1332,8 +1388,14 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
         resultsUrl: row.results_url || "",
         published_at: row.published_at || null,
         publishedAt: row.published_at || null,
+        unpublished_at: row.unpublished_at || null,
+        unpublishedAt: row.unpublished_at || null,
         current_step: row.current_step || data.current_step || data.currentStep || data.step || "",
         currentStep: row.current_step || data.current_step || data.currentStep || data.step || "",
+        campaign_start_date: row.campaign_start_date || data.campaign_start_date || data.campaignStartDate || data.parametrage?.date_lancement || null,
+        campaignStartDate: row.campaign_start_date || data.campaign_start_date || data.campaignStartDate || data.parametrage?.date_lancement || null,
+        campaign_end_date: row.campaign_end_date || data.campaign_end_date || data.campaignEndDate || data.parametrage?.date_cloture || null,
+        campaignEndDate: row.campaign_end_date || data.campaign_end_date || data.campaignEndDate || data.parametrage?.date_cloture || null,
         created_by: row.created_by || null,
         pack:
           row.organization_passations_pack ||
@@ -1400,7 +1462,7 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
   const { id } = req.params;
   const { status } = req.body;
 
-  const allowedStatuses = ["draft", "sent", "published", "results"];
+  const allowedStatuses = ["draft", "sent", "published", "unpublished"];
 
   if (!allowedStatuses.includes(status)) {
     return res.status(400).json({ error: "Statut invalide" });
@@ -1439,30 +1501,46 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
     shareUrl,
     resultsUrl,
     share_url,
-    results_url
+    results_url,
+    campaignStartDate,
+    campaignEndDate,
+    campaign_start_date,
+    campaign_end_date
   } = req.body;
 
+  const finalStatus = status || "published";
   const finalShareUrl = shareUrl || share_url || "";
   const finalResultsUrl = resultsUrl || results_url || "";
+  const finalCampaignStartDate = normalizeDateValue(campaignStartDate || campaign_start_date);
+  const finalCampaignEndDate = normalizeDateValue(campaignEndDate || campaign_end_date);
 
-  const allowedStatuses = [
-    "draft",
-    "sent",
-    "published"
-  ];
+  const allowedStatuses = ["draft", "sent", "published", "unpublished"];
 
-  if (status && !allowedStatuses.includes(status)) {
+  if (!allowedStatuses.includes(finalStatus)) {
     return res.status(400).json({ error: "Statut invalide" });
   }
 
-  try {
-    const finalStatus = status || "published";
-    const normalizedShareUrl = finalStatus === "published" ? finalShareUrl : "";
-    const normalizedResultsUrl = finalStatus === "published" ? finalResultsUrl : "";
+  if (finalStatus === "published" && (!finalShareUrl || !finalResultsUrl)) {
+    return res.status(400).json({ error: "URL de diffusion et URL résultats obligatoires pour publier." });
+  }
 
-    if (finalStatus === "published" && (!normalizedShareUrl || !normalizedResultsUrl)) {
-      return res.status(400).json({ error: "URL de diffusion et URL résultats obligatoires pour publier." });
+  try {
+    const existingResult = await pool.query(
+      `SELECT share_url, results_url FROM projects WHERE id = $1 LIMIT 1`,
+      [id]
+    );
+
+    if (!existingResult.rows[0]) {
+      return res.status(404).json({ error: "Projet introuvable" });
     }
+
+    const existing = existingResult.rows[0];
+    const nextShareUrl = finalStatus === "published"
+      ? finalShareUrl
+      : (finalStatus === "unpublished" ? (finalShareUrl || existing.share_url || "") : null);
+    const nextResultsUrl = (finalStatus === "published" || finalStatus === "unpublished")
+      ? (finalResultsUrl || existing.results_url || "")
+      : null;
 
     const result = await pool.query(
       `
@@ -1471,37 +1549,123 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
         status = $1,
         share_url = $2,
         results_url = $3,
-        published_at = CASE
-          WHEN $1 = 'published'
-          THEN COALESCE(published_at, NOW())
+        campaign_start_date = COALESCE($4, campaign_start_date),
+        campaign_end_date = COALESCE($5, campaign_end_date),
+        unpublished_at = CASE
+          WHEN $1 = 'unpublished' THEN COALESCE(unpublished_at, NOW())
           ELSE NULL
         END,
+        published_at = CASE
+          WHEN $1 = 'published' THEN COALESCE(published_at, NOW())
+          ELSE published_at
+        END,
         updated_at = NOW()
-      WHERE id = $4
+      WHERE id = $6
       RETURNING *
       `,
       [
         finalStatus,
-        normalizedShareUrl || null,
-        normalizedResultsUrl || null,
+        nextShareUrl,
+        nextResultsUrl,
+        finalCampaignStartDate,
+        finalCampaignEndDate,
         id
       ]
     );
 
-    if (!result.rows[0]) {
-      return res.status(404).json({ error: "Projet introuvable" });
-    }
-
-    res.json({
-      ok: true,
-      project: result.rows[0]
-    });
-
+    res.json({ ok: true, project: result.rows[0] });
   } catch (err) {
     console.error("Erreur publication projet", err);
     res.status(500).json({ error: "Erreur publication projet" });
   }
 });
+
+app.post("/api/admin/campaign-alerts/send", auth, requireAdmin, async (req, res) => {
+  const daysBefore = Number(req.body?.daysBefore || 7);
+
+  try {
+    const result = await pool.query(
+      `SELECT
+         p.id,
+         p.title,
+         p.campaign_end_date,
+         p.end_alert_sent_at,
+         p.results_url,
+         p.share_url,
+         u.email,
+         u.first_name,
+         o.contact_email,
+         o.contact_name
+       FROM projects p
+       LEFT JOIN users u ON u.id = p.user_id
+       LEFT JOIN organizations o ON o.id = p.organization_id
+       WHERE p.status = 'published'
+         AND p.campaign_end_date IS NOT NULL
+         AND p.end_alert_sent_at IS NULL
+         AND p.campaign_end_date >= CURRENT_DATE
+         AND p.campaign_end_date <= CURRENT_DATE + ($1 || ' days')::interval
+       ORDER BY p.campaign_end_date ASC`,
+      [daysBefore]
+    );
+
+    const sent = [];
+    const skipped = [];
+
+    for (const row of result.rows) {
+      const to = row.contact_email || row.email;
+      if (!to) {
+        skipped.push({ id: row.id, reason: "NO_EMAIL" });
+        continue;
+      }
+
+      const endDate = row.campaign_end_date
+        ? new Date(row.campaign_end_date).toLocaleDateString("fr-FR")
+        : "prochainement";
+
+      const mailResult = await sendTransactionalEmail({
+        to,
+        subject: `Votre autodiagnostic se termine bientôt — ${row.title || "Shift Studio"}`,
+        text:
+`Bonjour ${row.first_name || row.contact_name || ""},
+
+Votre campagne d’autodiagnostic "${row.title || "Shift Studio"}" arrive bientôt à son terme.
+
+Date de fin prévue : ${endDate}
+
+Après cette date, le lien de passation ne sera plus mis en avant côté client. L’accès aux résultats restera disponible si l’URL résultats a été renseignée.
+
+Pour prolonger la campagne ou modifier les dates, contactez contact@intotheshift.io.
+
+L’équipe Into The Shift`,
+        html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.5">
+  <p>Bonjour ${escapeHtml(row.first_name || row.contact_name || "")},</p>
+  <p>Votre campagne d’autodiagnostic <strong>${escapeHtml(row.title || "Shift Studio")}</strong> arrive bientôt à son terme.</p>
+  <p><strong>Date de fin prévue :</strong> ${escapeHtml(endDate)}</p>
+  <p>Après cette date, le lien de passation ne sera plus mis en avant côté client. L’accès aux résultats restera disponible si l’URL résultats a été renseignée.</p>
+  <p>Pour prolonger la campagne ou modifier les dates, contactez <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p>
+  <p>L’équipe Into The Shift</p>
+</div>`
+      });
+
+      if (mailResult.sent) {
+        await pool.query(
+          `UPDATE projects SET end_alert_sent_at = NOW() WHERE id = $1`,
+          [row.id]
+        );
+        sent.push({ id: row.id, to });
+      } else {
+        skipped.push({ id: row.id, to, reason: mailResult.reason || "SEND_FAILED" });
+      }
+    }
+
+    res.json({ ok: true, sent, skipped });
+  } catch (err) {
+    console.error("Erreur alertes fin de campagne", err);
+    res.status(500).json({ error: "Erreur alertes fin de campagne" });
+  }
+});
+
 app.delete("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
 
@@ -1526,67 +1690,6 @@ app.delete("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
     res.status(500).json({ error: "Erreur suppression projet" });
   }
 });
-
-app.post("/api/transmissions/client-recap", auth, async (req, res) => {
-  const {
-    clientInfo,
-    client_info,
-    entreprise,
-    titre_autodiag,
-    titre_repondants,
-    pdf_html,
-    recap_html,
-    subject
-  } = req.body || {};
-
-  const info = clientInfo || client_info || {};
-  const to = String(info.email || req.body?.email || "").trim();
-
-  if (!to) {
-    return res.status(400).json({ ok: false, error: "Email client requis" });
-  }
-
-  const title = String(titre_repondants || titre_autodiag || "votre autodiagnostic").trim();
-  const company = String(entreprise || info.entreprise || "").trim();
-  const html = recap_html || pdf_html;
-
-  if (!html) {
-    return res.status(400).json({ ok: false, error: "Contenu récapitulatif requis" });
-  }
-
-  const mailSubject = subject || `Récapitulatif de votre configuration Shift Studio — ${title}`;
-
-  const text =
-`Bonjour ${info.prenom || ""},
-
-Votre configuration Shift Studio a bien été transmise à Into The Shift.
-
-Vous trouverez ci-dessous le récapitulatif des choix renseignés pour ${title}${company ? " — " + company : ""}.
-
-Pour toute modification, contactez contact@intotheshift.io.
-
-L’équipe Into The Shift`;
-
-  const mailResult = await sendTransactionalEmail({
-    to,
-    subject: mailSubject,
-    text,
-    html
-  });
-
-  console.log("CLIENT RECAP EMAIL STATUS", {
-    email: to,
-    emailSent: mailResult.sent,
-    emailStatus: mailResult.reason || "SENT"
-  });
-
-  res.json({
-    ok: mailResult.sent,
-    emailSent: mailResult.sent,
-    emailStatus: mailResult.reason || "SENT"
-  });
-});
-
 app.post("/api/admin/test-email", auth, requireAdmin, async (req, res) => {
   const { email } = req.body;
 
@@ -1820,6 +1923,4 @@ initDb().then(() => {
     console.log(`API running on port ${PORT}`);
   });
 });
-
-
 
