@@ -354,7 +354,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "project-resume-clone-v4",
+    version: "project-no-duplicate-v5",
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
@@ -690,7 +690,18 @@ app.get("/api/projects", auth, async (req, res) => {
 });
 
 app.post("/api/projects", auth, async (req, res) => {
-  const { title, data, organizationId, status, projectId, currentStep } = req.body;
+  const { title, data, organizationId, status, currentStep } = req.body;
+  const projectId =
+    req.body.projectId ||
+    req.body.project_id ||
+    data?.currentAdId ||
+    data?.project_id ||
+    data?.projectId ||
+    data?.state?.currentAdId ||
+    data?.state?.project_id ||
+    data?.payload?.currentAdId ||
+    data?.payload?.project_id ||
+    null;
 
   const configSent =
     data?.configTransmise === true ||
