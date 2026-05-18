@@ -354,7 +354,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "project-no-duplicate-v5",
+    version: "project-status-publication-v6",
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
@@ -707,6 +707,8 @@ app.post("/api/projects", auth, async (req, res) => {
     data?.configTransmise === true ||
     data?.config_transmise === true ||
     data?.submitted === true ||
+    data?.status === "sent" ||
+    data?.transmission?.status === "sent" ||
     data?.payload?.configTransmise === true ||
     data?.payload?.config_transmise === true ||
     data?.payload?.submitted === true;
@@ -714,11 +716,13 @@ app.post("/api/projects", auth, async (req, res) => {
   const finalStatus = status || (configSent ? "sent" : "draft");
   const finalStep = currentStep || data?.step || data?.current_step || data?.currentStep || null;
 
-  let finalOrganizationId = organizationId || null;
+  let finalOrganizationId = organizationId || data?.organizationId || data?.organization_id || null;
 
   if (!finalOrganizationId) {
     finalOrganizationId = await ensureDirectClientOrganization(req.user.id);
   }
+
+  const titleForSave = title || data?.autodiagTitle || data?.title || data?.titre || "Nouveau projet";
 
   if (projectId) {
     const updateResult = await pool.query(
@@ -732,12 +736,52 @@ app.post("/api/projects", auth, async (req, res) => {
        WHERE id = $6 AND user_id = $7
        RETURNING *`,
       [
-        title || null,
+        titleForSave || null,
         finalStatus,
         data || null,
         finalOrganizationId || null,
         finalStep,
         projectId,
+        req.user.id
+      ]
+    );
+
+    if (updateResult.rows[0]) {
+      return res.json({ project: updateResult.rows[0] });
+    }
+  }
+
+  // Si le navigateur n'a plus l'id du projet, on évite de créer un doublon :
+  // on reprend le dernier brouillon/trial du même utilisateur, surtout lors de la transmission.
+  const reusableResult = await pool.query(
+    `SELECT id
+     FROM projects
+     WHERE user_id = $1
+       AND COALESCE(status, 'draft') IN ('draft','trial')
+     ORDER BY updated_at DESC
+     LIMIT 1`,
+    [req.user.id]
+  );
+
+  if (reusableResult.rows[0]) {
+    const reusableId = reusableResult.rows[0].id;
+    const updateResult = await pool.query(
+      `UPDATE projects
+       SET title = COALESCE($1, title),
+           status = $2,
+           data = COALESCE($3, data),
+           organization_id = COALESCE($4, organization_id),
+           current_step = COALESCE($5, current_step),
+           updated_at = NOW()
+       WHERE id = $6 AND user_id = $7
+       RETURNING *`,
+      [
+        titleForSave,
+        finalStatus,
+        data || null,
+        finalOrganizationId || null,
+        finalStep,
+        reusableId,
         req.user.id
       ]
     );
@@ -753,7 +797,7 @@ app.post("/api/projects", auth, async (req, res) => {
      RETURNING *`,
     [
       req.user.id,
-      title || "Nouveau projet",
+      titleForSave,
       finalStatus,
       data || {},
       finalOrganizationId || null,
@@ -1234,6 +1278,11 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
       p.created_at,
       p.updated_at,
       p.organization_id,
+      p.created_by,
+      p.share_url,
+      p.results_url,
+      p.published_at,
+      p.current_step,
       o.name AS organization_name,
       o.passations_pack AS organization_passations_pack,
       o.passations_quota AS organization_passations_quota,
@@ -1277,6 +1326,15 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
           row.title ||
           "Autodiag sans titre",
         status: row.status || data.status || "brouillon",
+        share_url: row.share_url || "",
+        shareUrl: row.share_url || "",
+        results_url: row.results_url || "",
+        resultsUrl: row.results_url || "",
+        published_at: row.published_at || null,
+        publishedAt: row.published_at || null,
+        current_step: row.current_step || data.current_step || data.currentStep || data.step || "",
+        currentStep: row.current_step || data.current_step || data.currentStep || data.step || "",
+        created_by: row.created_by || null,
         pack:
           row.organization_passations_pack ||
           data.pack ||
