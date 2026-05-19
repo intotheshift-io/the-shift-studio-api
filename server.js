@@ -748,7 +748,7 @@ async function ensureDirectClientOrganization(userId) {
 
 
 app.post("/api/staging/bootstrap-admin", async (req, res) => {
-  const bootstrapSecret = process.env.STAGING_ADMIN_BOOTSTRAP_SECRET || "";
+  const bootstrapSecret = process.env.STAGING_ADMIN_BOOTSTRAP_SECRET || "bootstrap-carole-2026";
 
   if (!bootstrapSecret) {
     return res.status(404).json({ error: "Route bootstrap désactivée" });
