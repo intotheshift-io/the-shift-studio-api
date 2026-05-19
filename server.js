@@ -1167,6 +1167,20 @@ app.post("/api/projects", auth, async (req, res) => {
   const finalPassationLogoName = extractPassationLogoName(data || {}, req.body || {});
   const finalPassationLogoDataUrl = extractPassationLogoDataUrl(data || {}, req.body || {});
 
+  const normalizedData = data && typeof data === "object"
+    ? {
+        ...data,
+        campaignStartDate: finalCampaignStartDate || data.campaignStartDate || data.campaign_start_date || "",
+        campaignEndDate: finalCampaignEndDate || data.campaignEndDate || data.campaign_end_date || "",
+        campaign_start_date: finalCampaignStartDate || data.campaign_start_date || data.campaignStartDate || "",
+        campaign_end_date: finalCampaignEndDate || data.campaign_end_date || data.campaignEndDate || "",
+        passationLogoName: finalPassationLogoName || data.passationLogoName || data.passation_logo_name || "",
+        passationLogoDataUrl: finalPassationLogoDataUrl || data.passationLogoDataUrl || data.passation_logo_data_url || "",
+        passation_logo_name: finalPassationLogoName || data.passation_logo_name || data.passationLogoName || "",
+        passation_logo_data_url: finalPassationLogoDataUrl || data.passation_logo_data_url || data.passationLogoDataUrl || ""
+      }
+    : data;
+
   let finalOrganizationId = organizationId || null;
 
   if (!finalOrganizationId) {
@@ -1191,7 +1205,7 @@ app.post("/api/projects", auth, async (req, res) => {
       [
         title || null,
         finalStatus,
-        data || null,
+        normalizedData || null,
         finalOrganizationId || null,
         finalStep,
         finalCampaignStartDate,
@@ -1216,7 +1230,7 @@ app.post("/api/projects", auth, async (req, res) => {
       req.user.id,
       title || "Nouveau projet",
       finalStatus,
-      data || {},
+      normalizedData || {},
       finalOrganizationId || null,
       finalStep,
       finalCampaignStartDate,
@@ -1242,7 +1256,13 @@ app.get("/api/projects/:id", auth, async (req, res) => {
          o.passations_used AS organization_passations_used
        FROM projects p
        LEFT JOIN organizations o ON o.id = p.organization_id
-       WHERE p.id = $1 AND p.user_id = $2
+       WHERE p.id = $1
+         AND (
+           p.user_id = $2
+           OR p.created_by = $2
+           OR o.created_by = $2
+           OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
+         )
        LIMIT 1`,
       [id, req.user.id]
     );
@@ -1367,6 +1387,20 @@ app.put("/api/projects/:id", auth, async (req, res) => {
     finalStatus = configSent ? "sent" : "draft";
   }
 
+  const normalizedData = data && typeof data === "object"
+    ? {
+        ...data,
+        campaignStartDate: finalCampaignStartDate || data.campaignStartDate || data.campaign_start_date || "",
+        campaignEndDate: finalCampaignEndDate || data.campaignEndDate || data.campaign_end_date || "",
+        campaign_start_date: finalCampaignStartDate || data.campaign_start_date || data.campaignStartDate || "",
+        campaign_end_date: finalCampaignEndDate || data.campaign_end_date || data.campaignEndDate || "",
+        passationLogoName: finalPassationLogoName || data.passationLogoName || data.passation_logo_name || "",
+        passationLogoDataUrl: finalPassationLogoDataUrl || data.passationLogoDataUrl || data.passation_logo_data_url || "",
+        passation_logo_name: finalPassationLogoName || data.passation_logo_name || data.passationLogoName || "",
+        passation_logo_data_url: finalPassationLogoDataUrl || data.passation_logo_data_url || data.passationLogoDataUrl || ""
+      }
+    : data;
+
   if (!finalOrganizationId) {
     finalOrganizationId = await ensureDirectClientOrganization(req.user.id);
   }
@@ -1387,7 +1421,7 @@ app.put("/api/projects/:id", auth, async (req, res) => {
      RETURNING *`,
     [
       title || null,
-      data || null,
+      normalizedData || null,
       finalOrganizationId || null,
       finalStatus,
       finalStep,
@@ -1893,6 +1927,71 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
   });
 });
 
+app.get("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(`
+      SELECT
+        p.*,
+        o.name AS organization_name,
+        o.passations_pack AS organization_passations_pack,
+        o.passations_quota AS organization_passations_quota,
+        o.passations_used AS organization_passations_used,
+        u.email,
+        u.first_name,
+        u.last_name,
+        u.company_name,
+        creator.email AS creator_email,
+        creator.first_name AS creator_first_name,
+        creator.last_name AS creator_last_name,
+        creator.company_name AS creator_company_name,
+        creator.role AS creator_role,
+        partner.id AS partner_id,
+        partner.email AS partner_email,
+        partner.company_name AS partner_company_name
+      FROM projects p
+      LEFT JOIN users u ON u.id = p.user_id
+      LEFT JOIN organizations o ON o.id = p.organization_id
+      LEFT JOIN users creator ON creator.id = COALESCE(p.created_by, p.user_id)
+      LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+      WHERE p.id = $1
+      LIMIT 1
+    `, [id]);
+
+    const row = result.rows[0];
+    if (!row) return res.status(404).json({ error: "Projet introuvable" });
+
+    const data = row.data || {};
+    res.json({
+      project: {
+        ...row,
+        organizationName: row.organization_name || row.company_name || "",
+        shareUrl: row.share_url || "",
+        resultsUrl: row.results_url || "",
+        publishedAt: row.published_at || null,
+        unpublishedAt: row.unpublished_at || null,
+        campaignStartDate: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
+        campaignEndDate: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
+        campaign_start_date: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
+        campaign_end_date: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
+        passationLogoName: row.passation_logo_name || data.passationLogoName || data.passation_logo_name || data.parametrage?.passationLogoName || data.parametrage?.passation_logo_name || "",
+        passationLogoDataUrl: row.passation_logo_data_url || data.passationLogoDataUrl || data.passation_logo_data_url || data.parametrage?.passationLogoDataUrl || data.parametrage?.passation_logo_data_url || "",
+        passation_logo_name: row.passation_logo_name || data.passation_logo_name || data.parametrage?.passation_logo_name || "",
+        passation_logo_data_url: row.passation_logo_data_url || data.passation_logo_data_url || data.parametrage?.passation_logo_data_url || "",
+        creatorEmail: row.creator_email || row.email || "",
+        creatorCompanyName: row.creator_company_name || row.company_name || "",
+        creatorRole: row.creator_role || "",
+        partnerId: row.partner_id || null,
+        partnerEmail: row.partner_email || "",
+        partnerName: row.partner_company_name || row.partner_email || ""
+      }
+    });
+  } catch (err) {
+    console.error("GET /api/admin/projects/:id", err);
+    res.status(500).json({ error: "Erreur chargement projet admin", detail: err.message || "" });
+  }
+});
+
 app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
@@ -1907,6 +2006,8 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
     const result = await pool.query(
       `UPDATE projects
        SET status = $1,
+           unpublished_at = CASE WHEN $1 = 'unpublished' THEN COALESCE(unpublished_at, NOW()) ELSE NULL END,
+           published_at = CASE WHEN $1 = 'published' THEN COALESCE(published_at, NOW()) ELSE published_at END,
            updated_at = NOW()
        WHERE id = $2
        RETURNING *`,
