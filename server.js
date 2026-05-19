@@ -2523,6 +2523,125 @@ app.delete("/api/admin/users/:id", auth, requireAdmin, async (req, res) => {
   }
 });
 
+
+app.post("/api/transmissions/client-recap", auth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const clientInfo = body.client_info || body.clientInfo || {};
+
+    const clientEmail =
+      body.clientEmail ||
+      body.client_email ||
+      clientInfo.email ||
+      "";
+
+    const clientName =
+      body.clientName ||
+      body.client_name ||
+      [clientInfo.prenom || clientInfo.firstName || clientInfo.first_name || "", clientInfo.nom || clientInfo.lastName || clientInfo.last_name || ""].filter(Boolean).join(" ").trim() ||
+      clientInfo.name ||
+      "";
+
+    const companyName =
+      body.companyName ||
+      body.company_name ||
+      body.entreprise ||
+      clientInfo.entreprise ||
+      clientInfo.companyName ||
+      "";
+
+    const autodiagTitle =
+      body.autodiagTitle ||
+      body.autodiag_title ||
+      body.titre_autodiag ||
+      body.titre_repondants ||
+      "votre autodiagnostic";
+
+    const recapHtml =
+      body.recap_html ||
+      body.recapHtml ||
+      body.pdf_html ||
+      body.htmlRecap ||
+      "";
+
+    const requestedSubject = body.subject || "";
+
+    if (!clientEmail) {
+      return res.status(400).json({
+        ok: false,
+        emailSent: false,
+        emailStatus: "MISSING_CLIENT_EMAIL",
+        error: "Email client manquant"
+      });
+    }
+
+    const helloName = clientName || "";
+    const subject = requestedSubject || `Récapitulatif de votre configuration Shift Studio — ${autodiagTitle}`;
+
+    const introHtml = `
+      <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
+        <p>Bonjour ${escapeHtml(helloName)},</p>
+        <p>Votre configuration d’autodiagnostic <strong>${escapeHtml(autodiagTitle)}</strong> a bien été transmise à Into The Shift.</p>
+        ${companyName ? `<p><strong>Entreprise :</strong> ${escapeHtml(companyName)}</p>` : ""}
+        <p>Notre équipe va vérifier les éléments transmis, préparer la mise en ligne et vous confirmer le lien de passation définitif.</p>
+        <p>Vous trouverez ci-dessous le récapitulatif de votre configuration.</p>
+        <hr style="border:none;border-top:1px solid #dce5ee;margin:24px 0">
+      </div>
+    `;
+
+    const outroHtml = `
+      <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
+        <hr style="border:none;border-top:1px solid #dce5ee;margin:24px 0">
+        <p>Pour toute correction ou précision, contactez <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p>
+        <p>L’équipe Into The Shift</p>
+      </div>
+    `;
+
+    const html = recapHtml
+      ? `${introHtml}${recapHtml}${outroHtml}`
+      : `${introHtml}<p style="font-family:Arial,sans-serif;color:#18375d">Le récapitulatif détaillé n’a pas été joint à cette transmission.</p>${outroHtml}`;
+
+    const text = `Bonjour ${helloName},
+
+Votre configuration d’autodiagnostic "${autodiagTitle}" a bien été transmise à Into The Shift.
+${companyName ? `Entreprise : ${companyName}\n` : ""}
+Notre équipe va vérifier les éléments transmis, préparer la mise en ligne et vous confirmer le lien de passation définitif.
+
+Pour toute correction ou précision, contactez contact@intotheshift.io.
+
+L’équipe Into The Shift`;
+
+    const recipients = [...new Set([clientEmail, "contact@intotheshift.io"].filter(Boolean))];
+
+    const mailResult = await sendTransactionalEmail({
+      to: recipients.join(","),
+      subject,
+      text,
+      html
+    });
+
+    console.log("CLIENT RECAP EMAIL STATUS", {
+      to: recipients,
+      emailSent: mailResult.sent,
+      emailStatus: mailResult.reason || "SENT"
+    });
+
+    return res.json({
+      ok: mailResult.sent,
+      emailSent: mailResult.sent,
+      emailStatus: mailResult.reason || "SENT"
+    });
+  } catch (err) {
+    console.error("Erreur /api/transmissions/client-recap", err);
+    return res.status(500).json({
+      ok: false,
+      emailSent: false,
+      emailStatus: "SERVER_ERROR",
+      error: "Erreur envoi email récapitulatif client"
+    });
+  }
+});
+
 initDb().then(() => {
   app.listen(PORT, () => {
     console.log(`API running on port ${PORT}`);
