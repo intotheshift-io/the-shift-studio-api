@@ -757,7 +757,9 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-safe-cockpit-v1",
+    version: "server-delete-debug-v3",
+    hasRobustProjectDelete: true,
+    hasDeleteDebugMarker: true,
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
