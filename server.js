@@ -378,26 +378,68 @@ function normalizeDateValue(value) {
   return d.toISOString().slice(0, 10);
 }
 
+function getProjectNestedData(data = {}) {
+  if (!data || typeof data !== "object") return {};
+  const payload = data.payload && typeof data.payload === "object" ? data.payload : {};
+  const state = data.state && typeof data.state === "object" ? data.state : {};
+  return { payload, state };
+}
+
 function getProjectParamData(data = {}) {
   if (!data || typeof data !== "object") return {};
-  return data.parametrage || data.params || data.settings || data.meta || {};
+  const { payload, state } = getProjectNestedData(data);
+  return (
+    data.parametrage ||
+    state.parametrage ||
+    payload.parametrage ||
+    data.params ||
+    state.params ||
+    payload.params ||
+    data.settings ||
+    state.settings ||
+    payload.settings ||
+    data.meta ||
+    state.meta ||
+    payload.meta ||
+    {}
+  );
 }
 
 function extractCampaignStartDate(data = {}, body = {}) {
   const param = getProjectParamData(data);
+  const { payload, state } = getProjectNestedData(data);
+  const stateParam = state.parametrage || {};
+  const payloadParam = payload.parametrage || {};
   return normalizeDateValue(
     body.campaignStartDate || body.campaign_start_date || body.startDate || body.start_date ||
     data.campaignStartDate || data.campaign_start_date || data.startDate || data.start_date ||
-    data.date_lancement || data.dateLancement || param.date_lancement || param.dateLancement || param.start_date
+    state.campaignStartDate || state.campaign_start_date || state.startDate || state.start_date ||
+    payload.campaignStartDate || payload.campaign_start_date || payload.startDate || payload.start_date ||
+    data.date_lancement || data.dateLancement ||
+    state.date_lancement || state.dateLancement ||
+    payload.date_lancement || payload.dateLancement ||
+    param.date_lancement || param.dateLancement || param.start_date ||
+    stateParam.date_lancement || stateParam.dateLancement || stateParam.start_date ||
+    payloadParam.date_lancement || payloadParam.dateLancement || payloadParam.start_date
   );
 }
 
 function extractCampaignEndDate(data = {}, body = {}) {
   const param = getProjectParamData(data);
+  const { payload, state } = getProjectNestedData(data);
+  const stateParam = state.parametrage || {};
+  const payloadParam = payload.parametrage || {};
   return normalizeDateValue(
     body.campaignEndDate || body.campaign_end_date || body.endDate || body.end_date ||
     data.campaignEndDate || data.campaign_end_date || data.endDate || data.end_date ||
-    data.date_cloture || data.dateCloture || param.date_cloture || param.dateCloture || param.end_date
+    state.campaignEndDate || state.campaign_end_date || state.endDate || state.end_date ||
+    payload.campaignEndDate || payload.campaign_end_date || payload.endDate || payload.end_date ||
+    data.date_cloture || data.dateCloture ||
+    state.date_cloture || state.dateCloture ||
+    payload.date_cloture || payload.dateCloture ||
+    param.date_cloture || param.dateCloture || param.end_date ||
+    stateParam.date_cloture || stateParam.dateCloture || stateParam.end_date ||
+    payloadParam.date_cloture || payloadParam.dateCloture || payloadParam.end_date
   );
 }
 
@@ -1080,10 +1122,10 @@ app.get("/api/projects", auth, async (req, res) => {
         resultsUrl: row.results_url || "",
         publishedAt: row.published_at || null,
         unpublishedAt: row.unpublished_at || null,
-        campaignStartDate: row.campaign_start_date || data.campaignStartDate || data.campaign_start_date || data.parametrage?.date_lancement || null,
-        campaignEndDate: row.campaign_end_date || data.campaignEndDate || data.campaign_end_date || data.parametrage?.date_cloture || null,
-        campaign_start_date: row.campaign_start_date || data.campaign_start_date || data.parametrage?.date_lancement || null,
-        campaign_end_date: row.campaign_end_date || data.campaign_end_date || data.parametrage?.date_cloture || null,
+        campaignStartDate: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
+        campaignEndDate: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
+        campaign_start_date: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
+        campaign_end_date: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
         currentStep: row.current_step || data.step || data.current_step || data.currentStep || "",
         passationLogoName: row.passation_logo_name || data.passationLogoName || data.passation_logo_name || data.parametrage?.passationLogoName || data.parametrage?.passation_logo_name || "",
         passationLogoDataUrl: row.passation_logo_data_url || data.passationLogoDataUrl || data.passation_logo_data_url || data.parametrage?.passationLogoDataUrl || data.parametrage?.passation_logo_data_url || "",
@@ -1226,10 +1268,10 @@ app.get("/api/projects/:id", auth, async (req, res) => {
         resultsUrl: row.results_url || "",
         publishedAt: row.published_at || null,
         unpublishedAt: row.unpublished_at || null,
-        campaignStartDate: row.campaign_start_date || data.campaignStartDate || data.campaign_start_date || data.parametrage?.date_lancement || null,
-        campaignEndDate: row.campaign_end_date || data.campaignEndDate || data.campaign_end_date || data.parametrage?.date_cloture || null,
-        campaign_start_date: row.campaign_start_date || data.campaign_start_date || data.parametrage?.date_lancement || null,
-        campaign_end_date: row.campaign_end_date || data.campaign_end_date || data.parametrage?.date_cloture || null,
+        campaignStartDate: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
+        campaignEndDate: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
+        campaign_start_date: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
+        campaign_end_date: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
         currentStep: row.current_step || data.step || data.current_step || data.currentStep || "",
         passationLogoName: row.passation_logo_name || data.passationLogoName || data.passation_logo_name || data.parametrage?.passationLogoName || data.parametrage?.passation_logo_name || "",
         passationLogoDataUrl: row.passation_logo_data_url || data.passationLogoDataUrl || data.passation_logo_data_url || data.parametrage?.passationLogoDataUrl || data.parametrage?.passation_logo_data_url || "",
@@ -1806,10 +1848,10 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
         published_at: row.published_at || null,
         unpublishedAt: row.unpublished_at || null,
         unpublished_at: row.unpublished_at || null,
-        campaignStartDate: row.campaign_start_date || data.campaignStartDate || data.campaign_start_date || data.parametrage?.date_lancement || null,
-        campaignEndDate: row.campaign_end_date || data.campaignEndDate || data.campaign_end_date || data.parametrage?.date_cloture || null,
-        campaign_start_date: row.campaign_start_date || data.campaign_start_date || data.parametrage?.date_lancement || null,
-        campaign_end_date: row.campaign_end_date || data.campaign_end_date || data.parametrage?.date_cloture || null,
+        campaignStartDate: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
+        campaignEndDate: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
+        campaign_start_date: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
+        campaign_end_date: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
         passationLogoName: row.passation_logo_name || data.passationLogoName || data.passation_logo_name || data.parametrage?.passationLogoName || data.parametrage?.passation_logo_name || "",
         passationLogoDataUrl: row.passation_logo_data_url || data.passationLogoDataUrl || data.passation_logo_data_url || data.parametrage?.passationLogoDataUrl || data.parametrage?.passation_logo_data_url || "",
         passation_logo_name: row.passation_logo_name || data.passation_logo_name || data.parametrage?.passation_logo_name || "",
@@ -2091,9 +2133,21 @@ app.patch("/api/admin/projects/:id/passation-logo", auth, requireAdmin, async (r
 
 app.delete("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
+  const client = await pool.connect();
 
   try {
-    const result = await pool.query(
+    await client.query("BEGIN");
+
+    // Suppression explicite des dépendances éventuelles.
+    // Important : les anciennes bases peuvent avoir une contrainte campaigns.project_id
+    // sans ON DELETE CASCADE, même si la migration actuelle le prévoit.
+    await client.query(
+      `DELETE FROM campaigns
+       WHERE project_id = $1`,
+      [id]
+    );
+
+    const result = await client.query(
       `DELETE FROM projects
        WHERE id = $1
        RETURNING id, title`,
@@ -2101,16 +2155,25 @@ app.delete("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
     );
 
     if (!result.rows[0]) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Projet introuvable" });
     }
+
+    await client.query("COMMIT");
 
     res.json({
       ok: true,
       deletedProject: result.rows[0]
     });
   } catch (err) {
+    await client.query("ROLLBACK");
     console.error("Erreur suppression projet admin", err);
-    res.status(500).json({ error: "Erreur suppression projet" });
+    res.status(500).json({
+      error: "Erreur suppression projet",
+      detail: err.message || "Erreur inconnue"
+    });
+  } finally {
+    client.release();
   }
 });
 app.post("/api/admin/test-email", auth, requireAdmin, async (req, res) => {
