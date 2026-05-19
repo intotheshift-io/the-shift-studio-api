@@ -675,7 +675,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "cockpit-admin-partner-fix-v7",
+    version: "campaign-admin-refresh-fix-v8",
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
@@ -689,6 +689,7 @@ app.get("/debug-version", (req, res) => {
     hasCreatorFields: true,
     hasProjectCurrentStep: true,
     hasProjectCloneRoute: true,
+    hasAdminProjectByIdRoute: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -1649,6 +1650,157 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
   } catch (err) {
     console.error("Erreur mise à jour passations organisation", err);
     res.status(500).json({ error: "Erreur mise à jour passations client final" });
+  }
+});
+
+
+app.get("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
+  await autoUnpublishExpiredProjects();
+  const { id } = req.params;
+
+  try {
+    const result = await pool.query(`
+      SELECT
+        p.id,
+        p.title,
+        p.status,
+        p.data,
+        p.trial_ends_at,
+        p.created_at,
+        p.updated_at,
+        p.share_url,
+        p.results_url,
+        p.published_at,
+        p.unpublished_at,
+        p.campaign_start_date,
+        p.campaign_end_date,
+        p.organization_id,
+        o.name AS organization_name,
+        o.contact_name AS organization_contact_name,
+        o.contact_email AS organization_contact_email,
+        o.passations_pack AS organization_passations_pack,
+        o.passations_quota AS organization_passations_quota,
+        o.passations_used AS organization_passations_used,
+        u.id AS user_id,
+        u.email,
+        u.first_name,
+        u.last_name,
+        u.company_name,
+        creator.id AS creator_id,
+        creator.email AS creator_email,
+        creator.first_name AS creator_first_name,
+        creator.last_name AS creator_last_name,
+        creator.company_name AS creator_company_name,
+        creator.role AS creator_role,
+        partner.id AS partner_id,
+        partner.email AS partner_email,
+        partner.first_name AS partner_first_name,
+        partner.last_name AS partner_last_name,
+        partner.company_name AS partner_company_name
+      FROM projects p
+      LEFT JOIN users u ON u.id = p.user_id
+      LEFT JOIN organizations o ON o.id = p.organization_id
+      LEFT JOIN users creator ON creator.id = COALESCE(p.created_by, p.user_id)
+      LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+      WHERE p.id = $1
+      LIMIT 1
+    `, [id]);
+
+    const row = result.rows[0];
+    if (!row) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const data = row.data || {};
+
+    res.json({
+      project: {
+        id: row.id,
+        title:
+          data.autodiagTitle ||
+          data.title ||
+          data.titre ||
+          data.projectTitle ||
+          row.title ||
+          "Autodiag sans titre",
+        status: row.status || data.status || "brouillon",
+        pack:
+          row.organization_passations_pack ||
+          data.pack ||
+          data.packChoisi ||
+          data.selectedPack ||
+          data.passationsPack ||
+          "—",
+        configTransmise:
+          data.configTransmise ||
+          data.config_transmise ||
+          data.submitted ||
+          false,
+        data,
+        organizationId: row.organization_id,
+        organization_id: row.organization_id,
+        organizationName: row.organization_name || row.company_name || "",
+        organization_name: row.organization_name || row.company_name || "",
+        organizationContactName: row.organization_contact_name || "",
+        organizationContactEmail: row.organization_contact_email || "",
+        organizationPassationsPack: row.organization_passations_pack || "",
+        organizationPassationsQuota: Number(row.organization_passations_quota || 0),
+        organizationPassationsUsed: Number(row.organization_passations_used || 0),
+        organizationPassationsRemaining: Math.max(
+          0,
+          Number(row.organization_passations_quota || 0) -
+          Number(row.organization_passations_used || 0)
+        ),
+        trialEndsAt: row.trial_ends_at,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        share_url: row.share_url || "",
+        shareUrl: row.share_url || "",
+        results_url: row.results_url || "",
+        resultsUrl: row.results_url || "",
+        published_at: row.published_at || null,
+        publishedAt: row.published_at || null,
+        unpublished_at: row.unpublished_at || null,
+        unpublishedAt: row.unpublished_at || null,
+        campaign_start_date: row.campaign_start_date || data.campaign_start_date || data.parametrage?.date_lancement || null,
+        campaignStartDate: row.campaign_start_date || data.campaignStartDate || data.parametrage?.date_lancement || null,
+        campaign_end_date: row.campaign_end_date || data.campaign_end_date || data.parametrage?.date_cloture || null,
+        campaignEndDate: row.campaign_end_date || data.campaignEndDate || data.parametrage?.date_cloture || null,
+        clientName:
+          row.organization_name ||
+          row.company_name ||
+          `${row.first_name || ""} ${row.last_name || ""}`.trim() ||
+          row.email ||
+          "—",
+        clientEmail: row.email || "",
+        creatorId: row.creator_id || row.user_id || null,
+        creatorEmail: row.creator_email || row.email || "",
+        creatorName:
+          `${row.creator_first_name || ""} ${row.creator_last_name || ""}`.trim() ||
+          row.creator_company_name ||
+          row.creator_email ||
+          "—",
+        creatorCompanyName: row.creator_company_name || row.company_name || "",
+        creatorRole: row.creator_role || "",
+        partnerId: row.partner_id || null,
+        partnerEmail: row.partner_email || "",
+        partnerName:
+          row.partner_company_name ||
+          `${row.partner_first_name || ""} ${row.partner_last_name || ""}`.trim() ||
+          row.partner_email ||
+          "",
+        client: {
+          id: row.user_id,
+          email: row.email,
+          firstName: row.first_name || "",
+          lastName: row.last_name || "",
+          companyName: row.company_name || ""
+        }
+      }
+    });
+  } catch (err) {
+    console.error("GET /api/admin/projects/:id", err);
+    res.status(500).json({ error: "Erreur chargement projet admin" });
   }
 });
 
