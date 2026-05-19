@@ -2133,44 +2133,60 @@ app.patch("/api/admin/projects/:id/passation-logo", auth, requireAdmin, async (r
 
 app.delete("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
+  const numericId = Number(id);
+
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: "ID projet invalide." });
+  }
+
   const client = await pool.connect();
 
   try {
     await client.query("BEGIN");
 
-    // Suppression explicite des dépendances éventuelles.
-    // Important : les anciennes bases peuvent avoir une contrainte campaigns.project_id
-    // sans ON DELETE CASCADE, même si la migration actuelle le prévoit.
-    await client.query(
-      `DELETE FROM campaigns
-       WHERE project_id = $1`,
-      [id]
+    const existing = await client.query(
+      `SELECT id, title FROM projects WHERE id = $1 FOR UPDATE`,
+      [numericId]
     );
 
-    const result = await client.query(
-      `DELETE FROM projects
-       WHERE id = $1
-       RETURNING id, title`,
-      [id]
-    );
-
-    if (!result.rows[0]) {
+    if (!existing.rows[0]) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Projet introuvable" });
     }
+
+    // Suppression explicite des dépendances connues.
+    // Important : certaines tables ont pu être créées avant l'ajout de ON DELETE CASCADE.
+    await client.query(`DELETE FROM campaigns WHERE project_id = $1`, [numericId]);
+
+    const deleted = await client.query(
+      `DELETE FROM projects
+       WHERE id = $1
+       RETURNING id, title`,
+      [numericId]
+    );
 
     await client.query("COMMIT");
 
     res.json({
       ok: true,
-      deletedProject: result.rows[0]
+      deletedProject: deleted.rows[0]
     });
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error("Erreur suppression projet admin", err);
+    console.error("Erreur suppression projet admin", {
+      projectId: numericId,
+      code: err.code,
+      constraint: err.constraint,
+      table: err.table,
+      detail: err.detail,
+      message: err.message
+    });
     res.status(500).json({
       error: "Erreur suppression projet",
-      detail: err.message || "Erreur inconnue"
+      detail: err.detail || err.message || "",
+      code: err.code || "",
+      constraint: err.constraint || "",
+      table: err.table || ""
     });
   } finally {
     client.release();
