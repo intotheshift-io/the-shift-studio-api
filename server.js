@@ -295,6 +295,16 @@ async function initDb() {
 
   await pool.query(`
     ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS passation_logo_name TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS passation_logo_data_url TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
     ADD COLUMN IF NOT EXISTS unpublished_at TIMESTAMP;
   `);
 
@@ -388,6 +398,38 @@ function extractCampaignEndDate(data = {}, body = {}) {
     body.campaignEndDate || body.campaign_end_date || body.endDate || body.end_date ||
     data.campaignEndDate || data.campaign_end_date || data.endDate || data.end_date ||
     data.date_cloture || data.dateCloture || param.date_cloture || param.dateCloture || param.end_date
+  );
+}
+
+function extractPassationLogoName(data = {}, body = {}) {
+  const param = getProjectParamData(data);
+  const campaign = data?.campagne || data?.campaign || {};
+  return (
+    body.passationLogoName ||
+    body.passation_logo_name ||
+    data.passationLogoName ||
+    data.passation_logo_name ||
+    param.passationLogoName ||
+    param.passation_logo_name ||
+    campaign.passationLogoName ||
+    campaign.passation_logo_name ||
+    ""
+  );
+}
+
+function extractPassationLogoDataUrl(data = {}, body = {}) {
+  const param = getProjectParamData(data);
+  const campaign = data?.campagne || data?.campaign || {};
+  return (
+    body.passationLogoDataUrl ||
+    body.passation_logo_data_url ||
+    data.passationLogoDataUrl ||
+    data.passation_logo_data_url ||
+    param.passationLogoDataUrl ||
+    param.passation_logo_data_url ||
+    campaign.passationLogoDataUrl ||
+    campaign.passation_logo_data_url ||
+    ""
   );
 }
 
@@ -629,9 +671,7 @@ async function ensureDirectClientOrganization(userId) {
   const user = userResult.rows[0];
   if (!user) return null;
 
-  // Un partner n'est pas son propre client final.
-  // Cette fonction ne crée un dossier client automatique
-  // que pour les comptes clients directs Into The Shift.
+  // Un partner/admin n'est pas son propre client final.
   if (String(user.role || "client").toLowerCase() !== "client") return null;
 
   const companyName = String(user.company_name || "").trim();
@@ -675,7 +715,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "campaign-admin-refresh-fix-v8",
+    version: "server-safe-cockpit-v1",
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
     hasEmailSentResponse: true,
@@ -686,10 +726,10 @@ app.get("/debug-version", (req, res) => {
     hasPassationsQuota: true,
     hasProjectOrganizationAutolink: true,
     hasProjectPublicationUrls: true,
+    hasProjectPassationLogoFields: true,
     hasCreatorFields: true,
     hasProjectCurrentStep: true,
     hasProjectCloneRoute: true,
-    hasAdminProjectByIdRoute: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -1044,7 +1084,11 @@ app.get("/api/projects", auth, async (req, res) => {
         campaignEndDate: row.campaign_end_date || data.campaignEndDate || data.campaign_end_date || data.parametrage?.date_cloture || null,
         campaign_start_date: row.campaign_start_date || data.campaign_start_date || data.parametrage?.date_lancement || null,
         campaign_end_date: row.campaign_end_date || data.campaign_end_date || data.parametrage?.date_cloture || null,
-        currentStep: row.current_step || data.step || data.current_step || data.currentStep || ""
+        currentStep: row.current_step || data.step || data.current_step || data.currentStep || "",
+        passationLogoName: row.passation_logo_name || data.passationLogoName || data.passation_logo_name || data.parametrage?.passationLogoName || data.parametrage?.passation_logo_name || "",
+        passationLogoDataUrl: row.passation_logo_data_url || data.passationLogoDataUrl || data.passation_logo_data_url || data.parametrage?.passationLogoDataUrl || data.parametrage?.passation_logo_data_url || "",
+        passation_logo_name: row.passation_logo_name || data.passation_logo_name || data.parametrage?.passation_logo_name || "",
+        passation_logo_data_url: row.passation_logo_data_url || data.passation_logo_data_url || data.parametrage?.passation_logo_data_url || ""
       };
     })
   });
@@ -1076,6 +1120,8 @@ app.post("/api/projects", auth, async (req, res) => {
   const finalStep = currentStep || data?.step || data?.current_step || data?.currentStep || null;
   const finalCampaignStartDate = extractCampaignStartDate(data || {}, req.body || {});
   const finalCampaignEndDate = extractCampaignEndDate(data || {}, req.body || {});
+  const finalPassationLogoName = extractPassationLogoName(data || {}, req.body || {});
+  const finalPassationLogoDataUrl = extractPassationLogoDataUrl(data || {}, req.body || {});
 
   let finalOrganizationId = organizationId || null;
 
@@ -1093,8 +1139,10 @@ app.post("/api/projects", auth, async (req, res) => {
            current_step = COALESCE($5, current_step),
            campaign_start_date = COALESCE($6, campaign_start_date),
            campaign_end_date = COALESCE($7, campaign_end_date),
+           passation_logo_name = COALESCE($8, passation_logo_name),
+           passation_logo_data_url = COALESCE($9, passation_logo_data_url),
            updated_at = NOW()
-       WHERE id = $8 AND user_id = $9
+       WHERE id = $10 AND user_id = $11
        RETURNING *`,
       [
         title || null,
@@ -1104,6 +1152,8 @@ app.post("/api/projects", auth, async (req, res) => {
         finalStep,
         finalCampaignStartDate,
         finalCampaignEndDate,
+        finalPassationLogoName || null,
+        finalPassationLogoDataUrl || null,
         projectId,
         req.user.id
       ]
@@ -1115,8 +1165,8 @@ app.post("/api/projects", auth, async (req, res) => {
   }
 
   const result = await pool.query(
-    `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step, campaign_start_date, campaign_end_date)
-     VALUES ($1, $2, $3, $4, $1, $5, $6, $7, $8)
+    `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step, campaign_start_date, campaign_end_date, passation_logo_name, passation_logo_data_url)
+     VALUES ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, $10)
      RETURNING *`,
     [
       req.user.id,
@@ -1126,7 +1176,9 @@ app.post("/api/projects", auth, async (req, res) => {
       finalOrganizationId || null,
       finalStep,
       finalCampaignStartDate,
-      finalCampaignEndDate
+      finalCampaignEndDate,
+      finalPassationLogoName || null,
+      finalPassationLogoDataUrl || null
     ]
   );
 
@@ -1178,7 +1230,11 @@ app.get("/api/projects/:id", auth, async (req, res) => {
         campaignEndDate: row.campaign_end_date || data.campaignEndDate || data.campaign_end_date || data.parametrage?.date_cloture || null,
         campaign_start_date: row.campaign_start_date || data.campaign_start_date || data.parametrage?.date_lancement || null,
         campaign_end_date: row.campaign_end_date || data.campaign_end_date || data.parametrage?.date_cloture || null,
-        currentStep: row.current_step || data.step || data.current_step || data.currentStep || ""
+        currentStep: row.current_step || data.step || data.current_step || data.currentStep || "",
+        passationLogoName: row.passation_logo_name || data.passationLogoName || data.passation_logo_name || data.parametrage?.passationLogoName || data.parametrage?.passation_logo_name || "",
+        passationLogoDataUrl: row.passation_logo_data_url || data.passationLogoDataUrl || data.passation_logo_data_url || data.parametrage?.passationLogoDataUrl || data.parametrage?.passation_logo_data_url || "",
+        passation_logo_name: row.passation_logo_name || data.passation_logo_name || data.parametrage?.passation_logo_name || "",
+        passation_logo_data_url: row.passation_logo_data_url || data.passation_logo_data_url || data.parametrage?.passation_logo_data_url || ""
       }
     });
   } catch (err) {
@@ -1255,6 +1311,8 @@ app.put("/api/projects/:id", auth, async (req, res) => {
   const finalStep = currentStep || data?.step || data?.current_step || data?.currentStep || null;
   const finalCampaignStartDate = extractCampaignStartDate(data || {}, req.body || {});
   const finalCampaignEndDate = extractCampaignEndDate(data || {}, req.body || {});
+  const finalPassationLogoName = extractPassationLogoName(data || {}, req.body || {});
+  const finalPassationLogoDataUrl = extractPassationLogoDataUrl(data || {}, req.body || {});
 
   const configSent =
     data?.configTransmise === true ||
@@ -1278,8 +1336,10 @@ app.put("/api/projects/:id", auth, async (req, res) => {
          current_step = COALESCE($5, current_step),
          campaign_start_date = COALESCE($6, campaign_start_date),
          campaign_end_date = COALESCE($7, campaign_end_date),
+         passation_logo_name = COALESCE($8, passation_logo_name),
+         passation_logo_data_url = COALESCE($9, passation_logo_data_url),
          updated_at = NOW()
-     WHERE id = $8 AND user_id = $9
+     WHERE id = $10 AND user_id = $11
      RETURNING *`,
     [
       title || null,
@@ -1289,6 +1349,8 @@ app.put("/api/projects/:id", auth, async (req, res) => {
       finalStep,
       finalCampaignStartDate,
       finalCampaignEndDate,
+      finalPassationLogoName || null,
+      finalPassationLogoDataUrl || null,
       id,
       req.user.id
     ]
@@ -1320,23 +1382,19 @@ app.get("/api/partner/me", auth, requirePartnerOrAdmin, async (req, res) => {
 app.get("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) => {
   try {
     const params = [];
-    let whereClause = "o.type = 'client'";
+    let whereClause = `
+      o.type = 'client'
+      AND NOT (
+        LOWER(TRIM(o.name)) = LOWER(TRIM(COALESCE(owner.company_name, '')))
+        AND COALESCE(o.contact_email, '') = COALESCE(owner.email, '')
+        AND COALESCE(owner.role, '') = 'partner'
+        AND NOT EXISTS (SELECT 1 FROM projects px WHERE px.organization_id = o.id)
+      )
+    `;
 
     if (req.user.role !== "admin") {
       params.push(req.user.id);
-      whereClause += `
-        AND o.created_by = $1
-        AND NOT (
-          LOWER(TRIM(o.name)) = LOWER(TRIM(COALESCE(owner.company_name, '')))
-          AND (
-            COALESCE(o.contact_email, '') = COALESCE(owner.email, '')
-            OR COALESCE(o.contact_email, '') = ''
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM projects px WHERE px.organization_id = o.id
-          )
-        )
-      `;
+      whereClause += " AND o.created_by = $1";
     }
 
     const result = await pool.query(`
@@ -1359,23 +1417,24 @@ app.get("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =>
               'title', p.title,
               'status', p.status,
               'updated_at', p.updated_at,
-              'created_at', p.created_at,
               'data', p.data,
-              'configTransmise', COALESCE((p.data->>'configTransmise')::boolean, false),
-              'config_transmise', COALESCE((p.data->>'config_transmise')::boolean, false),
-              'submitted', COALESCE((p.data->>'submitted')::boolean, false),
+              'current_step', p.current_step,
               'share_url', p.share_url,
               'shareUrl', p.share_url,
               'results_url', p.results_url,
               'resultsUrl', p.results_url,
+              'published_at', p.published_at,
+              'publishedAt', p.published_at,
+              'unpublished_at', p.unpublished_at,
+              'unpublishedAt', p.unpublished_at,
               'campaign_start_date', p.campaign_start_date,
               'campaignStartDate', p.campaign_start_date,
               'campaign_end_date', p.campaign_end_date,
               'campaignEndDate', p.campaign_end_date,
-              'published_at', p.published_at,
-              'publishedAt', p.published_at,
-              'unpublished_at', p.unpublished_at,
-              'unpublishedAt', p.unpublished_at
+              'passation_logo_name', p.passation_logo_name,
+              'passationLogoName', p.passation_logo_name,
+              'passation_logo_data_url', p.passation_logo_data_url,
+              'passationLogoDataUrl', p.passation_logo_data_url
             )
           ) FILTER (WHERE p.id IS NOT NULL),
           '[]'
@@ -1385,7 +1444,7 @@ app.get("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =>
       LEFT JOIN projects p ON p.organization_id = o.id
       LEFT JOIN campaigns c ON c.organization_id = o.id
       WHERE ${whereClause}
-      GROUP BY o.id
+      GROUP BY o.id, owner.id
       ORDER BY o.created_at DESC
     `, params);
 
@@ -1532,15 +1591,10 @@ app.get("/api/admin/organizations", auth, requireAdmin, async (req, res) => {
       LEFT JOIN projects p ON p.organization_id = o.id
       WHERE o.type = 'client'
         AND NOT (
-          COALESCE(u.role, '') = 'partner'
-          AND LOWER(TRIM(o.name)) = LOWER(TRIM(COALESCE(u.company_name, '')))
-          AND (
-            COALESCE(o.contact_email, '') = COALESCE(u.email, '')
-            OR COALESCE(o.contact_email, '') = ''
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM projects px WHERE px.organization_id = o.id
-          )
+          LOWER(TRIM(o.name)) = LOWER(TRIM(COALESCE(u.company_name, '')))
+          AND COALESCE(o.contact_email, '') = COALESCE(u.email, '')
+          AND COALESCE(u.role, '') = 'partner'
+          AND NOT EXISTS (SELECT 1 FROM projects px WHERE px.organization_id = o.id)
         )
       GROUP BY o.id, u.id
       ORDER BY o.created_at DESC
@@ -1653,157 +1707,6 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
   }
 });
 
-
-app.get("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
-  await autoUnpublishExpiredProjects();
-  const { id } = req.params;
-
-  try {
-    const result = await pool.query(`
-      SELECT
-        p.id,
-        p.title,
-        p.status,
-        p.data,
-        p.trial_ends_at,
-        p.created_at,
-        p.updated_at,
-        p.share_url,
-        p.results_url,
-        p.published_at,
-        p.unpublished_at,
-        p.campaign_start_date,
-        p.campaign_end_date,
-        p.organization_id,
-        o.name AS organization_name,
-        o.contact_name AS organization_contact_name,
-        o.contact_email AS organization_contact_email,
-        o.passations_pack AS organization_passations_pack,
-        o.passations_quota AS organization_passations_quota,
-        o.passations_used AS organization_passations_used,
-        u.id AS user_id,
-        u.email,
-        u.first_name,
-        u.last_name,
-        u.company_name,
-        creator.id AS creator_id,
-        creator.email AS creator_email,
-        creator.first_name AS creator_first_name,
-        creator.last_name AS creator_last_name,
-        creator.company_name AS creator_company_name,
-        creator.role AS creator_role,
-        partner.id AS partner_id,
-        partner.email AS partner_email,
-        partner.first_name AS partner_first_name,
-        partner.last_name AS partner_last_name,
-        partner.company_name AS partner_company_name
-      FROM projects p
-      LEFT JOIN users u ON u.id = p.user_id
-      LEFT JOIN organizations o ON o.id = p.organization_id
-      LEFT JOIN users creator ON creator.id = COALESCE(p.created_by, p.user_id)
-      LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
-      WHERE p.id = $1
-      LIMIT 1
-    `, [id]);
-
-    const row = result.rows[0];
-    if (!row) {
-      return res.status(404).json({ error: "Projet introuvable" });
-    }
-
-    const data = row.data || {};
-
-    res.json({
-      project: {
-        id: row.id,
-        title:
-          data.autodiagTitle ||
-          data.title ||
-          data.titre ||
-          data.projectTitle ||
-          row.title ||
-          "Autodiag sans titre",
-        status: row.status || data.status || "brouillon",
-        pack:
-          row.organization_passations_pack ||
-          data.pack ||
-          data.packChoisi ||
-          data.selectedPack ||
-          data.passationsPack ||
-          "—",
-        configTransmise:
-          data.configTransmise ||
-          data.config_transmise ||
-          data.submitted ||
-          false,
-        data,
-        organizationId: row.organization_id,
-        organization_id: row.organization_id,
-        organizationName: row.organization_name || row.company_name || "",
-        organization_name: row.organization_name || row.company_name || "",
-        organizationContactName: row.organization_contact_name || "",
-        organizationContactEmail: row.organization_contact_email || "",
-        organizationPassationsPack: row.organization_passations_pack || "",
-        organizationPassationsQuota: Number(row.organization_passations_quota || 0),
-        organizationPassationsUsed: Number(row.organization_passations_used || 0),
-        organizationPassationsRemaining: Math.max(
-          0,
-          Number(row.organization_passations_quota || 0) -
-          Number(row.organization_passations_used || 0)
-        ),
-        trialEndsAt: row.trial_ends_at,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        share_url: row.share_url || "",
-        shareUrl: row.share_url || "",
-        results_url: row.results_url || "",
-        resultsUrl: row.results_url || "",
-        published_at: row.published_at || null,
-        publishedAt: row.published_at || null,
-        unpublished_at: row.unpublished_at || null,
-        unpublishedAt: row.unpublished_at || null,
-        campaign_start_date: row.campaign_start_date || data.campaign_start_date || data.parametrage?.date_lancement || null,
-        campaignStartDate: row.campaign_start_date || data.campaignStartDate || data.parametrage?.date_lancement || null,
-        campaign_end_date: row.campaign_end_date || data.campaign_end_date || data.parametrage?.date_cloture || null,
-        campaignEndDate: row.campaign_end_date || data.campaignEndDate || data.parametrage?.date_cloture || null,
-        clientName:
-          row.organization_name ||
-          row.company_name ||
-          `${row.first_name || ""} ${row.last_name || ""}`.trim() ||
-          row.email ||
-          "—",
-        clientEmail: row.email || "",
-        creatorId: row.creator_id || row.user_id || null,
-        creatorEmail: row.creator_email || row.email || "",
-        creatorName:
-          `${row.creator_first_name || ""} ${row.creator_last_name || ""}`.trim() ||
-          row.creator_company_name ||
-          row.creator_email ||
-          "—",
-        creatorCompanyName: row.creator_company_name || row.company_name || "",
-        creatorRole: row.creator_role || "",
-        partnerId: row.partner_id || null,
-        partnerEmail: row.partner_email || "",
-        partnerName:
-          row.partner_company_name ||
-          `${row.partner_first_name || ""} ${row.partner_last_name || ""}`.trim() ||
-          row.partner_email ||
-          "",
-        client: {
-          id: row.user_id,
-          email: row.email,
-          firstName: row.first_name || "",
-          lastName: row.last_name || "",
-          companyName: row.company_name || ""
-        }
-      }
-    });
-  } catch (err) {
-    console.error("GET /api/admin/projects/:id", err);
-    res.status(500).json({ error: "Erreur chargement projet admin" });
-  }
-});
-
 app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
   await autoUnpublishExpiredProjects();
   const result = await pool.query(`
@@ -1815,19 +1718,16 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
       p.trial_ends_at,
       p.created_at,
       p.updated_at,
-      p.share_url,
-      p.results_url,
-      p.published_at,
-      p.unpublished_at,
-      p.campaign_start_date,
-      p.campaign_end_date,
       p.organization_id,
+      p.current_step,
       p.share_url,
       p.results_url,
-      p.campaign_start_date,
-      p.campaign_end_date,
       p.published_at,
       p.unpublished_at,
+      p.campaign_start_date,
+      p.campaign_end_date,
+      p.passation_logo_name,
+      p.passation_logo_data_url,
       o.name AS organization_name,
       o.passations_pack AS organization_passations_pack,
       o.passations_quota AS organization_passations_quota,
@@ -1886,18 +1786,6 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
         data,
         organizationId: row.organization_id,
         organizationName: row.organization_name || row.company_name || "",
-        shareUrl: row.share_url || "",
-        share_url: row.share_url || "",
-        resultsUrl: row.results_url || "",
-        results_url: row.results_url || "",
-        campaignStartDate: row.campaign_start_date || data.campaignStartDate || data.campaign_start_date || data.parametrage?.date_lancement || null,
-        campaign_start_date: row.campaign_start_date || data.campaign_start_date || data.parametrage?.date_lancement || null,
-        campaignEndDate: row.campaign_end_date || data.campaignEndDate || data.campaign_end_date || data.parametrage?.date_cloture || null,
-        campaign_end_date: row.campaign_end_date || data.campaign_end_date || data.parametrage?.date_cloture || null,
-        publishedAt: row.published_at || null,
-        published_at: row.published_at || null,
-        unpublishedAt: row.unpublished_at || null,
-        unpublished_at: row.unpublished_at || null,
         organizationPassationsPack: row.organization_passations_pack || "",
         organizationPassationsQuota: Number(row.organization_passations_quota || 0),
         organizationPassationsUsed: Number(row.organization_passations_used || 0),
@@ -1909,18 +1797,23 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
         trialEndsAt: row.trial_ends_at,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
-        share_url: row.share_url || "",
+        currentStep: row.current_step || data.step || data.current_step || data.currentStep || "",
         shareUrl: row.share_url || "",
-        results_url: row.results_url || "",
+        share_url: row.share_url || "",
         resultsUrl: row.results_url || "",
-        published_at: row.published_at || null,
+        results_url: row.results_url || "",
         publishedAt: row.published_at || null,
-        unpublished_at: row.unpublished_at || null,
+        published_at: row.published_at || null,
         unpublishedAt: row.unpublished_at || null,
+        unpublished_at: row.unpublished_at || null,
+        campaignStartDate: row.campaign_start_date || data.campaignStartDate || data.campaign_start_date || data.parametrage?.date_lancement || null,
+        campaignEndDate: row.campaign_end_date || data.campaignEndDate || data.campaign_end_date || data.parametrage?.date_cloture || null,
         campaign_start_date: row.campaign_start_date || data.campaign_start_date || data.parametrage?.date_lancement || null,
-        campaignStartDate: row.campaign_start_date || data.campaignStartDate || data.parametrage?.date_lancement || null,
         campaign_end_date: row.campaign_end_date || data.campaign_end_date || data.parametrage?.date_cloture || null,
-        campaignEndDate: row.campaign_end_date || data.campaignEndDate || data.parametrage?.date_cloture || null,
+        passationLogoName: row.passation_logo_name || data.passationLogoName || data.passation_logo_name || data.parametrage?.passationLogoName || data.parametrage?.passation_logo_name || "",
+        passationLogoDataUrl: row.passation_logo_data_url || data.passationLogoDataUrl || data.passation_logo_data_url || data.parametrage?.passationLogoDataUrl || data.parametrage?.passation_logo_data_url || "",
+        passation_logo_name: row.passation_logo_name || data.passation_logo_name || data.parametrage?.passation_logo_name || "",
+        passation_logo_data_url: row.passation_logo_data_url || data.passation_logo_data_url || data.parametrage?.passation_logo_data_url || "",
         clientName:
           row.organization_name ||
           row.company_name ||
@@ -2038,13 +1931,13 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
 
     const existing = existingResult.rows[0];
 
-    const nextShareUrl = finalStatus === "published"
-      ? finalShareUrl
-      : (finalStatus === "unpublished" ? (finalShareUrl || existing.share_url || "") : null);
+    const nextShareUrl = (finalStatus === "published" || finalStatus === "unpublished")
+      ? (finalShareUrl || existing.share_url || "")
+      : (finalShareUrl || existing.share_url || "");
 
     const nextResultsUrl = (finalStatus === "published" || finalStatus === "unpublished")
       ? (finalResultsUrl || existing.results_url || "")
-      : null;
+      : (finalResultsUrl || existing.results_url || "");
 
     const result = await pool.query(
       `
@@ -2120,6 +2013,79 @@ app.post("/api/campaign-alerts/run", async (req, res) => {
   } catch (err) {
     console.error("Erreur run alertes campagne", err);
     res.status(500).json({ error: "Erreur alertes campagne" });
+  }
+});
+
+
+app.patch("/api/projects/:id/passation-logo", auth, async (req, res) => {
+  const { id } = req.params;
+  const passationLogoName = req.body.passationLogoName || req.body.passation_logo_name || "";
+  const passationLogoDataUrl = req.body.passationLogoDataUrl || req.body.passation_logo_data_url || "";
+
+  try {
+    const result = await pool.query(`
+      UPDATE projects p
+      SET passation_logo_name = $1,
+          passation_logo_data_url = $2,
+          data = COALESCE(p.data, '{}'::jsonb) || jsonb_build_object(
+            'passationLogoName', $1,
+            'passationLogoDataUrl', $2,
+            'passation_logo_name', $1,
+            'passation_logo_data_url', $2
+          ),
+          updated_at = NOW()
+      FROM organizations o
+      WHERE p.id = $3
+        AND o.id = p.organization_id
+        AND (
+          p.user_id = $4
+          OR p.created_by = $4
+          OR o.created_by = $4
+          OR EXISTS (SELECT 1 FROM users u WHERE u.id = $4 AND u.role = 'admin')
+        )
+      RETURNING p.*
+    `, [passationLogoName || null, passationLogoDataUrl || null, id, req.user.id]);
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Projet introuvable ou non autorisé" });
+    }
+
+    res.json({ ok: true, project: result.rows[0] });
+  } catch (err) {
+    console.error("PATCH /api/projects/:id/passation-logo", err);
+    res.status(500).json({ error: "Erreur mise à jour logo passation" });
+  }
+});
+
+app.patch("/api/admin/projects/:id/passation-logo", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const passationLogoName = req.body.passationLogoName || req.body.passation_logo_name || "";
+  const passationLogoDataUrl = req.body.passationLogoDataUrl || req.body.passation_logo_data_url || "";
+
+  try {
+    const result = await pool.query(`
+      UPDATE projects
+      SET passation_logo_name = $1,
+          passation_logo_data_url = $2,
+          data = COALESCE(data, '{}'::jsonb) || jsonb_build_object(
+            'passationLogoName', $1,
+            'passationLogoDataUrl', $2,
+            'passation_logo_name', $1,
+            'passation_logo_data_url', $2
+          ),
+          updated_at = NOW()
+      WHERE id = $3
+      RETURNING *
+    `, [passationLogoName || null, passationLogoDataUrl || null, id]);
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    res.json({ ok: true, project: result.rows[0] });
+  } catch (err) {
+    console.error("PATCH /api/admin/projects/:id/passation-logo", err);
+    res.status(500).json({ error: "Erreur mise à jour logo passation admin" });
   }
 });
 
