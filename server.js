@@ -746,6 +746,51 @@ async function ensureDirectClientOrganization(userId) {
   return created.rows[0].id;
 }
 
+
+app.post("/api/staging/bootstrap-admin", async (req, res) => {
+  const bootstrapSecret = process.env.STAGING_ADMIN_BOOTSTRAP_SECRET || "";
+
+  if (!bootstrapSecret) {
+    return res.status(404).json({ error: "Route bootstrap désactivée" });
+  }
+
+  const providedSecret =
+    req.headers["x-bootstrap-secret"] ||
+    req.body?.secret ||
+    req.query?.secret ||
+    "";
+
+  if (providedSecret !== bootstrapSecret) {
+    return res.status(403).json({ error: "Accès refusé" });
+  }
+
+  const email = String(req.body?.email || "").trim().toLowerCase();
+
+  if (!email) {
+    return res.status(400).json({ error: "Email requis" });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE users
+       SET role = 'admin'
+       WHERE email = $1
+       RETURNING id, email, role`,
+      [email]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Utilisateur introuvable" });
+    }
+
+    res.json({ ok: true, user: result.rows[0] });
+  } catch (err) {
+    console.error("Erreur bootstrap admin staging", err);
+    res.status(500).json({ error: "Erreur bootstrap admin staging" });
+  }
+});
+
+
 app.get("/", (req, res) => {
   res.json({ ok: true, app: "The Shift Studio API" });
 });
