@@ -112,7 +112,7 @@ const transporter = mailerIsConfigured()
     })
   : null;
 
-async function sendTransactionalEmail({ to, subject, text, html }) {
+async function sendTransactionalEmail({ to, cc, bcc, subject, text, html, attachments }) {
   if (!transporter) {
     console.warn("Email non envoyé : SMTP non configuré", { to, subject });
     return { sent: false, reason: "SMTP_NOT_CONFIGURED" };
@@ -122,9 +122,12 @@ async function sendTransactionalEmail({ to, subject, text, html }) {
     await transporter.sendMail({
       from: `Into The Shift <${SMTP_FROM}>`,
       to,
+      cc,
+      bcc,
       subject,
       text,
-      html
+      html,
+      attachments: Array.isArray(attachments) ? attachments : undefined
     });
 
     return { sent: true };
@@ -821,6 +824,7 @@ app.get("/debug-version", (req, res) => {
     hasCreatorFields: true,
     hasProjectCurrentStep: true,
     hasProjectCloneRoute: true,
+    hasBackendTransmissionSubmit: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -2634,6 +2638,241 @@ app.delete("/api/admin/users/:id", auth, requireAdmin, async (req, res) => {
   }
 });
 
+
+
+
+function buildTransmissionEmailContext(body = {}) {
+  const payload = body.payload && typeof body.payload === "object" ? body.payload : body;
+  const clientInfo = payload.client_info || payload.clientInfo || {};
+
+  const clientEmail =
+    payload.clientEmail ||
+    payload.client_email ||
+    clientInfo.email ||
+    "";
+
+  const clientName =
+    payload.clientName ||
+    payload.client_name ||
+    [clientInfo.prenom || clientInfo.firstName || clientInfo.first_name || "", clientInfo.nom || clientInfo.lastName || clientInfo.last_name || ""].filter(Boolean).join(" ").trim() ||
+    clientInfo.name ||
+    "";
+
+  const companyName =
+    payload.companyName ||
+    payload.company_name ||
+    payload.entreprise ||
+    clientInfo.entreprise ||
+    clientInfo.companyName ||
+    "";
+
+  const autodiagTitle =
+    payload.autodiagTitle ||
+    payload.autodiag_title ||
+    payload.titre_autodiag ||
+    payload.titre_repondants ||
+    "votre autodiagnostic";
+
+  const recapHtml =
+    payload.recap_html ||
+    payload.recapHtml ||
+    payload.pdf_html ||
+    payload.htmlRecap ||
+    "";
+
+  const excelHtml =
+    payload.excel_html ||
+    payload.excelHtml ||
+    payload.excel?.data ||
+    payload.data ||
+    "";
+
+  const safeCompany = String(companyName || "client")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "client";
+
+  const excelFilename =
+    payload.excel_filename ||
+    payload.excelFilename ||
+    payload.excel?.filename ||
+    `configuration-shift-studio-${safeCompany}.xls`;
+
+  const recapFilename =
+    payload.pdf_filename ||
+    payload.recap_filename ||
+    payload.recap?.filename ||
+    `recapitulatif-shift-studio-${safeCompany}.html`;
+
+  const subject = payload.subject || `Récapitulatif de votre configuration Shift Studio — ${autodiagTitle}`;
+
+  return {
+    payload,
+    clientInfo,
+    clientEmail,
+    clientName,
+    companyName,
+    autodiagTitle,
+    recapHtml,
+    recapFilename,
+    excelHtml,
+    excelFilename,
+    subject
+  };
+}
+
+function buildClientRecapEmailHtml(ctx) {
+  const helloName = ctx.clientName || "";
+  const introHtml = `
+    <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
+      <p>Bonjour ${escapeHtml(helloName)},</p>
+      <p>Votre configuration d’autodiagnostic <strong>${escapeHtml(ctx.autodiagTitle)}</strong> a bien été transmise à Into The Shift.</p>
+      ${ctx.companyName ? `<p><strong>Entreprise :</strong> ${escapeHtml(ctx.companyName)}</p>` : ""}
+      <p>Notre équipe va vérifier les éléments transmis, préparer la mise en ligne et vous confirmer le lien de passation définitif.</p>
+      <p>Vous trouverez ci-dessous le récapitulatif de votre configuration.</p>
+      <hr style="border:none;border-top:1px solid #dce5ee;margin:24px 0">
+    </div>
+  `;
+
+  const outroHtml = `
+    <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
+      <hr style="border:none;border-top:1px solid #dce5ee;margin:24px 0">
+      <p>Pour toute correction ou précision, contactez <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p>
+      <p>L’équipe Into The Shift</p>
+    </div>
+  `;
+
+  return ctx.recapHtml
+    ? `${introHtml}${ctx.recapHtml}${outroHtml}`
+    : `${introHtml}<p style="font-family:Arial,sans-serif;color:#18375d">Le récapitulatif détaillé n’a pas été joint à cette transmission.</p>${outroHtml}`;
+}
+
+function buildClientRecapEmailText(ctx) {
+  return `Bonjour ${ctx.clientName || ""},
+
+Votre configuration d’autodiagnostic "${ctx.autodiagTitle}" a bien été transmise à Into The Shift.
+${ctx.companyName ? `Entreprise : ${ctx.companyName}\n` : ""}
+Notre équipe va vérifier les éléments transmis, préparer la mise en ligne et vous confirmer le lien de passation définitif.
+
+Pour toute correction ou précision, contactez contact@intotheshift.io.
+
+L’équipe Into The Shift`;
+}
+
+app.post("/api/transmissions/submit", auth, async (req, res) => {
+  try {
+    const ctx = buildTransmissionEmailContext(req.body || {});
+
+    if (!ctx.clientEmail) {
+      return res.status(400).json({
+        ok: false,
+        clientEmailSent: false,
+        adminEmailSent: false,
+        error: "Email client manquant"
+      });
+    }
+
+    if (!ctx.excelHtml) {
+      return res.status(400).json({
+        ok: false,
+        clientEmailSent: false,
+        adminEmailSent: false,
+        error: "Fichier Excel manquant"
+      });
+    }
+
+    const clientHtml = buildClientRecapEmailHtml(ctx);
+    const clientText = buildClientRecapEmailText(ctx);
+
+    const clientMail = await sendTransactionalEmail({
+      to: ctx.clientEmail,
+      subject: ctx.subject,
+      text: clientText,
+      html: clientHtml,
+      attachments: ctx.recapHtml ? [
+        {
+          filename: ctx.recapFilename,
+          content: ctx.recapHtml,
+          contentType: "text/html; charset=utf-8"
+        }
+      ] : []
+    });
+
+    const adminSubject = `Nouvelle configuration à intégrer — ${ctx.companyName || "Client"} — ${ctx.autodiagTitle}`;
+    const adminHtml = `
+      <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
+        <p><strong>Nouvelle configuration transmise depuis Shift Studio.</strong></p>
+        <p>
+          <strong>Entreprise :</strong> ${escapeHtml(ctx.companyName || "—")}<br>
+          <strong>Contact :</strong> ${escapeHtml(ctx.clientName || "—")}<br>
+          <strong>Email :</strong> ${escapeHtml(ctx.clientEmail || "—")}<br>
+          <strong>Autodiagnostic :</strong> ${escapeHtml(ctx.autodiagTitle || "—")}
+        </p>
+        <p>Le fichier Excel de configuration est joint à cet email. Le récapitulatif client est également joint et repris ci-dessous.</p>
+        <hr style="border:none;border-top:1px solid #dce5ee;margin:24px 0">
+        ${ctx.recapHtml || ""}
+      </div>
+    `;
+
+    const adminMail = await sendTransactionalEmail({
+      to: "contact@intotheshift.io",
+      subject: adminSubject,
+      text:
+`Nouvelle configuration transmise depuis Shift Studio.
+
+Entreprise : ${ctx.companyName || "—"}
+Contact : ${ctx.clientName || "—"}
+Email : ${ctx.clientEmail || "—"}
+Autodiagnostic : ${ctx.autodiagTitle || "—"}
+
+Le fichier Excel de configuration est joint à cet email.`,
+      html: adminHtml,
+      attachments: [
+        {
+          filename: ctx.excelFilename,
+          content: ctx.excelHtml,
+          contentType: "application/vnd.ms-excel; charset=utf-8"
+        },
+        ...(ctx.recapHtml ? [{
+          filename: ctx.recapFilename,
+          content: ctx.recapHtml,
+          contentType: "text/html; charset=utf-8"
+        }] : [])
+      ]
+    });
+
+    console.log("TRANSMISSION SUBMIT EMAIL STATUS", {
+      clientEmail: ctx.clientEmail,
+      clientEmailSent: clientMail.sent,
+      clientEmailStatus: clientMail.reason || "SENT",
+      adminEmail: "contact@intotheshift.io",
+      adminEmailSent: adminMail.sent,
+      adminEmailStatus: adminMail.reason || "SENT",
+      excelFilename: ctx.excelFilename,
+      recapFilename: ctx.recapFilename
+    });
+
+    return res.json({
+      ok: clientMail.sent && adminMail.sent,
+      clientEmailSent: clientMail.sent,
+      clientEmailStatus: clientMail.reason || "SENT",
+      adminEmailSent: adminMail.sent,
+      adminEmailStatus: adminMail.reason || "SENT",
+      excelFilename: ctx.excelFilename,
+      recapFilename: ctx.recapFilename
+    });
+  } catch (err) {
+    console.error("Erreur /api/transmissions/submit", err);
+    return res.status(500).json({
+      ok: false,
+      clientEmailSent: false,
+      adminEmailSent: false,
+      error: "Erreur transmission email backend"
+    });
+  }
+});
 
 app.post("/api/transmissions/client-recap", auth, async (req, res) => {
   try {
