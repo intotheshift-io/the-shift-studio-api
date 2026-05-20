@@ -802,8 +802,9 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-delete-debug-v3",
+    version: "server-delete-robust-fk-v4",
     hasRobustProjectDelete: true,
+    hasRobustProjectDeleteFkCleanup: true,
     hasDeleteDebugMarker: true,
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
@@ -2302,9 +2303,50 @@ app.delete("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
       return res.status(404).json({ error: "Projet introuvable" });
     }
 
+    const deletedDependencies = [];
+
     // Suppression explicite des dépendances connues.
-    // Important : certaines tables ont pu être créées avant l'ajout de ON DELETE CASCADE.
-    await client.query(`DELETE FROM campaigns WHERE project_id = $1`, [numericId]);
+    // Important : certaines tables peuvent avoir été créées avant l'ajout de ON DELETE CASCADE.
+    const campaignsDeleted = await client.query(
+      `DELETE FROM campaigns WHERE project_id = $1 RETURNING id`,
+      [numericId]
+    );
+    deletedDependencies.push({ table: "campaigns", count: campaignsDeleted.rowCount });
+
+    // Sécurité supplémentaire : si d'autres tables ajoutées plus tard référencent projects(id),
+    // on supprime aussi les lignes dépendantes avant de supprimer le projet.
+    const fkResult = await client.query(`
+      SELECT
+        ns.nspname AS schema_name,
+        child.relname AS table_name,
+        att.attname AS column_name
+      FROM pg_constraint con
+      JOIN pg_class parent ON parent.oid = con.confrelid
+      JOIN pg_class child ON child.oid = con.conrelid
+      JOIN pg_namespace ns ON ns.oid = child.relnamespace
+      JOIN unnest(con.conkey) WITH ORDINALITY AS cols(attnum, ord) ON true
+      JOIN pg_attribute att ON att.attrelid = child.oid AND att.attnum = cols.attnum
+      WHERE con.contype = 'f'
+        AND parent.relname = 'projects'
+        AND ns.nspname = 'public'
+        AND child.relname <> 'projects'
+    `);
+
+    for (const fk of fkResult.rows) {
+      const tableName = String(fk.table_name || "");
+      const columnName = String(fk.column_name || "");
+
+      // campaigns vient déjà d'être traité explicitement.
+      if (!tableName || !columnName || tableName === "campaigns") continue;
+
+      const tableIdent = `"${tableName.replace(/"/g, '""')}"`;
+      const columnIdent = `"${columnName.replace(/"/g, '""')}"`;
+      const depDeleted = await client.query(
+        `DELETE FROM ${tableIdent} WHERE ${columnIdent} = $1`,
+        [numericId]
+      );
+      deletedDependencies.push({ table: tableName, column: columnName, count: depDeleted.rowCount });
+    }
 
     const deleted = await client.query(
       `DELETE FROM projects
@@ -2313,11 +2355,24 @@ app.delete("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
       [numericId]
     );
 
+    if (!deleted.rows[0]) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Projet introuvable au moment de la suppression" });
+    }
+
+    const check = await client.query(`SELECT id FROM projects WHERE id = $1`, [numericId]);
+
+    if (check.rows[0]) {
+      await client.query("ROLLBACK");
+      return res.status(500).json({ error: "Suppression non confirmée en base." });
+    }
+
     await client.query("COMMIT");
 
     res.json({
       ok: true,
-      deletedProject: deleted.rows[0]
+      deletedProject: deleted.rows[0],
+      deletedDependencies
     });
   } catch (err) {
     await client.query("ROLLBACK");
@@ -2340,6 +2395,7 @@ app.delete("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
     client.release();
   }
 });
+
 app.post("/api/admin/test-email", auth, requireAdmin, async (req, res) => {
   const { email } = req.body;
 
