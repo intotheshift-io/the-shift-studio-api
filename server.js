@@ -818,6 +818,7 @@ app.get("/debug-version", (req, res) => {
     hasMustChangePasswordFlag: true,
     hasPartnerClientsApi: true,
     hasPassationsQuota: true,
+    hasClientOrganizationQuotaRoute: true,
     hasProjectOrganizationAutolink: true,
     hasProjectPublicationUrls: true,
     hasProjectPassationLogoFields: true,
@@ -1033,6 +1034,29 @@ app.get("/api/me", auth, async (req, res) => {
   );
 
   res.json({ user: formatUser(result.rows[0]) });
+});
+
+app.get("/api/me/organization-quota", auth, async (req, res) => {
+  try {
+    const organizationId = await ensureDirectClientOrganization(req.user.id);
+
+    if (!organizationId) {
+      return res.json({ organization: null });
+    }
+
+    const result = await pool.query(
+      `SELECT *
+       FROM organizations
+       WHERE id = $1
+       LIMIT 1`,
+      [organizationId]
+    );
+
+    res.json({ organization: formatOrganization(result.rows[0]) });
+  } catch (err) {
+    console.error("GET /api/me/organization-quota", err);
+    res.status(500).json({ error: "Erreur chargement quota client." });
+  }
 });
 
 app.patch("/api/me", auth, async (req, res) => {
