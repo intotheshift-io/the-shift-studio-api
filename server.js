@@ -802,9 +802,10 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-delete-robust-fk-v4",
+    version: "server-delete-no-recreate-v5",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
+    hasNoRecreateDeletedProjectGuard: true,
     hasDeleteDebugMarker: true,
     hasAdminCompanyRoute: true,
     hasPatchMeRoute: true,
@@ -1266,6 +1267,15 @@ app.post("/api/projects", auth, async (req, res) => {
     if (updateResult.rows[0]) {
       return res.json({ project: updateResult.rows[0] });
     }
+
+    // Correctif important : si un projectId existe côté navigateur mais que le projet
+    // n'existe plus en base, on ne doit surtout pas recréer un nouvel AD.
+    // Cela évite le retour des AD supprimés depuis une ancienne sauvegarde localStorage.
+    return res.status(404).json({
+      error: "Projet supprimé ou introuvable",
+      code: "PROJECT_NOT_FOUND_NO_RECREATE",
+      projectId
+    });
   }
 
   const result = await pool.query(
