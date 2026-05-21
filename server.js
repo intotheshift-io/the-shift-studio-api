@@ -1435,6 +1435,72 @@ app.get("/api/projects/:id", auth, async (req, res) => {
   }
 });
 
+app.delete("/api/projects/:id", auth, async (req, res) => {
+  const { id } = req.params;
+  const numericId = Number(id);
+
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: "ID projet invalide." });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const existing = await client.query(
+      `SELECT id, title, status, data
+       FROM projects
+       WHERE id = $1 AND user_id = $2
+       FOR UPDATE`,
+      [numericId, req.user.id]
+    );
+
+    const project = existing.rows[0];
+
+    if (!project) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Projet introuvable." });
+    }
+
+    const data = project.data || {};
+    const rawStatus = String(project.status || data.status || "").toLowerCase();
+    const isSubmitted =
+      rawStatus.includes("sent") ||
+      rawStatus.includes("submitted") ||
+      rawStatus.includes("transmis") ||
+      rawStatus.includes("publi") ||
+      data.configTransmise === true ||
+      data.config_transmise === true ||
+      data.submitted === true ||
+      Boolean(data.transmission?.submitted_at);
+
+    if (isSubmitted) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ error: "Seuls les brouillons peuvent être supprimés." });
+    }
+
+    await client.query(`DELETE FROM campaigns WHERE project_id = $1`, [numericId]);
+
+    const deleted = await client.query(
+      `DELETE FROM projects
+       WHERE id = $1 AND user_id = $2
+       RETURNING id, title`,
+      [numericId, req.user.id]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({ ok: true, deletedProject: deleted.rows[0] });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("DELETE /api/projects/:id", err);
+    return res.status(500).json({ error: "Erreur suppression projet." });
+  } finally {
+    client.release();
+  }
+});
+
 app.post("/api/projects/:id/clone", auth, async (req, res) => {
   const { id } = req.params;
 
