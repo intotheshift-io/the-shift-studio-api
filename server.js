@@ -936,7 +936,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-delete-no-recreate-v5-unique-org-user",
+    version: "server-project-isolation-v6-user-org-guard",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
     hasNoRecreateDeletedProjectGuard: true,
@@ -2956,10 +2956,30 @@ app.post("/api/admin/users", auth, requireAdmin, async (req, res) => {
 
     const user = userResult.rows[0];
 
-    if (safeRole === "client" && organizationId) {
-      await addUserToOrganization({ organizationId, userId: user.id, role: "member" });
-    } else if (safeRole === "client" && companyName) {
-      await ensureDirectClientOrganization(user.id);
+    if (safeRole === "client") {
+      let shouldAttachToExistingOrganization = false;
+
+      if (organizationId) {
+        const orgCheck = await pool.query(
+          `SELECT id, name FROM organizations WHERE id = $1 LIMIT 1`,
+          [organizationId]
+        );
+        const orgName = String(orgCheck.rows[0]?.name || "").trim().toLowerCase();
+        const requestedCompany = String(companyName || "").trim().toLowerCase();
+
+        // Protection anti-régression : si l'admin a encore un ancien client sélectionné
+        // dans le navigateur, on ne rattache pas le nouveau compte à cette ancienne
+        // organisation quand le nom d'entreprise ne correspond pas.
+        shouldAttachToExistingOrganization = Boolean(
+          orgCheck.rows[0] && (!requestedCompany || orgName === requestedCompany)
+        );
+      }
+
+      if (shouldAttachToExistingOrganization) {
+        await addUserToOrganization({ organizationId, userId: user.id, role: "member" });
+      } else if (companyName) {
+        await ensureDirectClientOrganization(user.id);
+      }
     }
 
     const loginUrl = `${FRONTEND_URL}/login.html?redirect=account.html%3Ftab%3Dsecurite%26firstLogin%3D1`;
