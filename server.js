@@ -825,21 +825,6 @@ async function ensureDirectClientOrganization(userId) {
 }
 
 async function getUserPrimaryOrganizationId(userId) {
-  const userResult = await pool.query(
-    `SELECT id, role FROM users WHERE id = $1 LIMIT 1`,
-    [userId]
-  );
-
-  const role = String(userResult.rows[0]?.role || "client").toLowerCase();
-
-  // Correctif v7 : pour un compte client final, la source de vérité est son
-  // cockpit direct, pas une ancienne ligne organization_users qui peut rester
-  // d'un autre client après des tests admin/navigateur.
-  if (role === "client") {
-    const directOrganizationId = await ensureDirectClientOrganization(userId);
-    if (directOrganizationId) return directOrganizationId;
-  }
-
   const membership = await pool.query(
     `SELECT organization_id
      FROM organization_users
@@ -893,34 +878,6 @@ async function addUserToOrganization({ organizationId, userId, role = "member" }
   } finally {
     client.release();
   }
-}
-
-
-function buildProjectAccessCondition(req, projectAlias = "p", orgAlias = "o") {
-  const role = String(req.user?.role || "client").toLowerCase();
-
-  if (role === "admin") {
-    return "1 = 1";
-  }
-
-  if (role === "partner") {
-    return `(
-      ${projectAlias}.created_by = $1
-      OR ${projectAlias}.user_id = $1
-      OR ${orgAlias}.created_by = $1
-      OR EXISTS (
-        SELECT 1 FROM organization_users ou_access
-        WHERE ou_access.organization_id = ${projectAlias}.organization_id
-          AND ou_access.user_id = $1
-      )
-    )`;
-  }
-
-  // Client final : garde-fou strict.
-  // Un client ne doit jamais reprendre, charger ou écraser le projet d'un autre
-  // compte, même si une ancienne ligne organization_users ou un vieux localStorage
-  // pointe vers une autre organisation.
-  return `${projectAlias}.user_id = $1`;
 }
 
 
@@ -979,7 +936,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-project-isolation-v7-client-strict-owner",
+    version: "server-project-isolation-v6-user-org-guard",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
     hasNoRecreateDeletedProjectGuard: true,
@@ -1003,7 +960,6 @@ app.get("/debug-version", (req, res) => {
     hasBackendTransmissionSubmit: true,
     hasUserStatusLifecycle: true,
     hasAdminUserProfileFields: true,
-    hasClientStrictProjectOwnerGuard: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -1356,8 +1312,6 @@ app.patch("/api/me/password", auth, async (req, res) => {
 });
 
 app.get("/api/projects", auth, async (req, res) => {
-  const accessCondition = buildProjectAccessCondition(req, "p", "o");
-
   const result = await pool.query(
     `SELECT
        p.*,
@@ -1367,7 +1321,10 @@ app.get("/api/projects", auth, async (req, res) => {
        o.passations_used AS organization_passations_used
      FROM projects p
      LEFT JOIN organizations o ON o.id = p.organization_id
-     WHERE ${accessCondition}
+     LEFT JOIN organization_users ou ON ou.organization_id = p.organization_id AND ou.user_id = $1
+     WHERE p.user_id = $1
+        OR p.created_by = $1
+        OR ou.user_id IS NOT NULL
      ORDER BY p.updated_at DESC`,
     [req.user.id]
   );
@@ -1466,11 +1423,13 @@ app.post("/api/projects", auth, async (req, res) => {
            passation_logo_name = COALESCE($8, passation_logo_name),
            passation_logo_data_url = COALESCE($9, passation_logo_data_url),
            updated_at = NOW()
-       FROM organizations o
-       WHERE projects.id = $10
-         AND o.id = projects.organization_id
-         AND ${buildProjectAccessCondition(req, "projects", "o")}
-       RETURNING projects.*`,
+       WHERE id = $10
+         AND (
+           user_id = $11
+           OR created_by = $11
+           OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $11)
+         )
+       RETURNING *`,
       [
         title || null,
         finalStatus,
@@ -1535,7 +1494,13 @@ app.get("/api/projects/:id", auth, async (req, res) => {
        FROM projects p
        LEFT JOIN organizations o ON o.id = p.organization_id
        WHERE p.id = $1
-         AND ${buildProjectAccessCondition(req, "p", "o")}
+         AND (
+           p.user_id = $2
+           OR p.created_by = $2
+           OR o.created_by = $2
+           OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = p.organization_id AND ou.user_id = $2)
+           OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
+         )
        LIMIT 1`,
       [id, req.user.id]
     );
@@ -1766,11 +1731,13 @@ app.put("/api/projects/:id", auth, async (req, res) => {
          passation_logo_name = COALESCE($8, passation_logo_name),
          passation_logo_data_url = COALESCE($9, passation_logo_data_url),
          updated_at = NOW()
-     FROM organizations o
-     WHERE projects.id = $10
-       AND o.id = projects.organization_id
-       AND ${buildProjectAccessCondition(req, "projects", "o")}
-     RETURNING projects.*`,
+     WHERE id = $10
+       AND (
+         user_id = $11
+         OR created_by = $11
+         OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $11)
+       )
+     RETURNING *`,
     [
       title || null,
       normalizedData || null,
