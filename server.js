@@ -58,7 +58,6 @@ function formatUser(user) {
     organizationLogoDataUrl: user.organization_logo_data_url || "",
     passationLogoName: user.passation_logo_name || "",
     passationLogoDataUrl: user.passation_logo_data_url || "",
-    status: user.status || "active",
     role: user.role || "client",
     mustChangePassword: user.must_change_password === true,
     passationsQuota: quota,
@@ -159,7 +158,6 @@ async function initDb() {
       job_title TEXT,
       sector TEXT,
       role TEXT DEFAULT 'client',
-      status TEXT DEFAULT 'active',
       reset_password_token_hash TEXT,
       reset_password_expires_at TIMESTAMP,
       must_change_password BOOLEAN DEFAULT false,
@@ -172,17 +170,6 @@ async function initDb() {
   await pool.query(`
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'client';
-  `);
-
-  await pool.query(`
-    ALTER TABLE users
-    ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
-  `);
-
-  await pool.query(`
-    UPDATE users
-    SET status = 'active'
-    WHERE status IS NULL OR status = '';
   `);
 
   await pool.query(`
@@ -379,7 +366,7 @@ async function initDb() {
   `);
 }
 
-async function auth(req, res, next) {
+function auth(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.replace("Bearer ", "");
 
@@ -387,20 +374,8 @@ async function auth(req, res, next) {
 
   try {
     req.user = jwt.verify(token, JWT_SECRET);
-
-    const statusResult = await pool.query(
-      `SELECT status FROM users WHERE id = $1 LIMIT 1`,
-      [req.user.id]
-    );
-
-    const status = statusResult.rows[0]?.status || "active";
-    if (!statusResult.rows[0] || status !== "active") {
-      return res.status(403).json({ error: "Compte désactivé ou supprimé" });
-    }
-
     next();
-  } catch (err) {
-    console.error("Erreur authentification", err);
+  } catch {
     return res.status(401).json({ error: "Session invalide" });
   }
 }
@@ -846,16 +821,38 @@ async function addUserToOrganization({ organizationId, userId, role = "member" }
   const uid = Number(userId);
   if (!Number.isInteger(orgId) || !Number.isInteger(uid)) return null;
 
-  const result = await pool.query(
-    `INSERT INTO organization_users (organization_id, user_id, role)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (organization_id, user_id)
-     DO UPDATE SET role = EXCLUDED.role
-     RETURNING *`,
-    [orgId, uid, role || "member"]
-  );
+  const client = await pool.connect();
 
-  return result.rows[0];
+  try {
+    await client.query("BEGIN");
+
+    // Un compte client ne doit être rattaché qu'à un seul cockpit client à la fois.
+    // Sans cette suppression préalable, un même user peut apparaître plusieurs fois
+    // dans l'admin si plusieurs lignes organization_users existent pour lui.
+    await client.query(
+      `DELETE FROM organization_users
+       WHERE user_id = $1
+         AND organization_id <> $2`,
+      [uid, orgId]
+    );
+
+    const result = await client.query(
+      `INSERT INTO organization_users (organization_id, user_id, role)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (organization_id, user_id)
+       DO UPDATE SET role = EXCLUDED.role
+       RETURNING *`,
+      [orgId, uid, role || "member"]
+    );
+
+    await client.query("COMMIT");
+    return result.rows[0];
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 
@@ -914,7 +911,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-delete-no-recreate-v5",
+    version: "server-delete-no-recreate-v5-unique-org-user",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
     hasNoRecreateDeletedProjectGuard: true,
@@ -936,8 +933,6 @@ app.get("/debug-version", (req, res) => {
     hasProjectCloneRoute: true,
     hasOrganizationUsers: true,
     hasBackendTransmissionSubmit: true,
-    hasUserStatusLifecycle: true,
-    hasAdminUserProfileFields: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -959,7 +954,7 @@ app.post("/api/register", async (req, res) => {
     const userResult = await pool.query(
       `INSERT INTO users (email, password_hash, first_name, last_name, company_name, job_title, sector, role)
        VALUES ($1, $2, $3, $4, $5, $6, $7, 'client')
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
       [email.toLowerCase(), passwordHash, firstName || "", lastName || "", companyName || "", jobTitle || "", sector || ""]
     );
 
@@ -1004,11 +999,6 @@ app.post("/api/login", async (req, res) => {
 
   const user = result.rows[0];
   if (!user) return res.status(401).json({ error: "Identifiants incorrects" });
-
-  const userStatus = user.status || "active";
-  if (userStatus !== "active") {
-    return res.status(403).json({ error: "Ce compte est désactivé. Contactez Into The Shift." });
-  }
 
   const valid = await bcrypt.compare(password, user.password_hash);
   if (!valid) return res.status(401).json({ error: "Identifiants incorrects" });
@@ -1278,7 +1268,7 @@ app.patch("/api/me/password", auth, async (req, res) => {
            reset_password_token_hash = NULL,
            reset_password_expires_at = NULL
        WHERE id = $2
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
       [passwordHash, req.user.id]
     );
 
@@ -1916,15 +1906,21 @@ app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
       u.passations_quota,
       u.passations_used,
       u.created_at,
-      COUNT(p.id)::int AS projects_count,
+      COUNT(DISTINCT p.id)::int AS projects_count,
       MAX(p.updated_at) AS last_project_update,
-      ou.organization_id,
+      primary_ou.organization_id,
       org.name AS organization_name
     FROM users u
     LEFT JOIN projects p ON p.user_id = u.id
-    LEFT JOIN organization_users ou ON ou.user_id = u.id
-    LEFT JOIN organizations org ON org.id = ou.organization_id
-    GROUP BY u.id, ou.organization_id, org.name
+    LEFT JOIN LATERAL (
+      SELECT ou.organization_id
+      FROM organization_users ou
+      WHERE ou.user_id = u.id
+      ORDER BY ou.created_at DESC, ou.id DESC
+      LIMIT 1
+    ) primary_ou ON true
+    LEFT JOIN organizations org ON org.id = primary_ou.organization_id
+    GROUP BY u.id, primary_ou.organization_id, org.name
     ORDER BY u.created_at DESC
   `);
 
@@ -2033,7 +2029,7 @@ app.patch("/api/admin/users/:id/passations", auth, requireAdmin, async (req, res
        SET passations_quota = $1,
            passations_used = $2
        WHERE id = $3
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
       [
         Number(passationsQuota || 0),
         Number(passationsUsed || 0),
@@ -2061,7 +2057,7 @@ app.patch("/api/admin/users/:id/company", auth, requireAdmin, async (req, res) =
       `UPDATE users
        SET company_name = $1
        WHERE id = $2
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
       [
         companyName || "",
         id
@@ -2076,84 +2072,6 @@ app.patch("/api/admin/users/:id/company", auth, requireAdmin, async (req, res) =
   } catch (err) {
     console.error("Erreur mise à jour entreprise utilisateur", err);
     res.status(500).json({ error: "Erreur mise à jour entreprise" });
-  }
-});
-
-app.patch("/api/admin/users/:id/profile", auth, requireAdmin, async (req, res) => {
-  const { id } = req.params;
-  const { companyName, jobTitle, sector } = req.body;
-
-  try {
-    const current = await pool.query(
-      `SELECT company_name, job_title, sector FROM users WHERE id = $1 LIMIT 1`,
-      [id]
-    );
-
-    if (!current.rows[0]) {
-      return res.status(404).json({ error: "Utilisateur introuvable" });
-    }
-
-    const result = await pool.query(
-      `UPDATE users
-       SET company_name = $1,
-           job_title = $2,
-           sector = $3
-       WHERE id = $4
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
-      [
-        companyName !== undefined ? companyName || "" : current.rows[0].company_name || "",
-        jobTitle !== undefined ? jobTitle || "" : current.rows[0].job_title || "",
-        sector !== undefined ? sector || "" : current.rows[0].sector || "",
-        id
-      ]
-    );
-
-    res.json({ user: formatUser(result.rows[0]) });
-  } catch (err) {
-    console.error("Erreur mise à jour profil utilisateur admin", err);
-    res.status(500).json({ error: "Erreur mise à jour profil utilisateur" });
-  }
-});
-
-app.patch("/api/admin/users/:id/status", auth, requireAdmin, async (req, res) => {
-  const { id } = req.params;
-  const { status } = req.body;
-  const safeStatus = String(status || "").toLowerCase();
-
-  if (!["active", "disabled", "deleted"].includes(safeStatus)) {
-    return res.status(400).json({ error: "Statut utilisateur invalide" });
-  }
-
-  if (Number(id) === Number(req.user.id) && safeStatus !== "active") {
-    return res.status(400).json({ error: "Vous ne pouvez pas désactiver ou supprimer votre propre compte admin" });
-  }
-
-  try {
-    const existing = await pool.query(
-      `SELECT id, role FROM users WHERE id = $1 LIMIT 1`,
-      [id]
-    );
-
-    if (!existing.rows[0]) {
-      return res.status(404).json({ error: "Utilisateur introuvable" });
-    }
-
-    if (existing.rows[0].role === "admin" && safeStatus !== "active") {
-      return res.status(403).json({ error: "Par sécurité, un compte admin ne peut pas être désactivé ou supprimé depuis cette interface" });
-    }
-
-    const result = await pool.query(
-      `UPDATE users
-       SET status = $1
-       WHERE id = $2
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
-      [safeStatus, id]
-    );
-
-    res.json({ ok: true, user: formatUser(result.rows[0]) });
-  } catch (err) {
-    console.error("Erreur changement statut utilisateur", err);
-    res.status(500).json({ error: "Erreur changement statut utilisateur" });
   }
 });
 
@@ -2190,7 +2108,7 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
 
 app.post("/api/admin/organizations/:id/users", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
-  const { email, password, firstName, lastName, jobTitle, sector, role } = req.body;
+  const { email, password, firstName, lastName, jobTitle, role } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ error: "Email et mot de passe requis" });
@@ -2203,9 +2121,9 @@ app.post("/api/admin/organizations/:id/users", auth, requireAdmin, async (req, r
 
     const passwordHash = await bcrypt.hash(password, 10);
     const userResult = await pool.query(
-      `INSERT INTO users (email, password_hash, first_name, last_name, company_name, job_title, sector, role, status, must_change_password)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'client', 'active', true)
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+      `INSERT INTO users (email, password_hash, first_name, last_name, company_name, job_title, role, must_change_password)
+       VALUES ($1, $2, $3, $4, $5, $6, 'client', true)
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
       [
         email.toLowerCase(),
         passwordHash,
@@ -2213,7 +2131,6 @@ app.post("/api/admin/organizations/:id/users", auth, requireAdmin, async (req, r
         lastName || "",
         org.name || "",
         jobTitle || "",
-        sector || ""
       ]
     );
 
@@ -2896,8 +2813,6 @@ app.post("/api/admin/users", auth, requireAdmin, async (req, res) => {
     firstName,
     lastName,
     companyName,
-    jobTitle,
-    sector,
     role,
     organizationId
   } = req.body;
@@ -2911,17 +2826,15 @@ app.post("/api/admin/users", auth, requireAdmin, async (req, res) => {
 
   try {
     const userResult = await pool.query(
-      `INSERT INTO users (email, password_hash, first_name, last_name, company_name, job_title, sector, role, status, must_change_password)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', true)
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+      `INSERT INTO users (email, password_hash, first_name, last_name, company_name, role, must_change_password)
+       VALUES ($1, $2, $3, $4, $5, $6, true)
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
       [
         email.toLowerCase(),
         passwordHash,
         firstName || "",
         lastName || "",
         companyName || "",
-        jobTitle || "",
-        sector || "",
         safeRole
       ]
     );
@@ -3003,7 +2916,7 @@ app.patch("/api/admin/users/:id/role", auth, requireAdmin, async (req, res) => {
       `UPDATE users
        SET role = $1
        WHERE id = $2
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
       [role, id]
     );
 
@@ -3025,35 +2938,62 @@ app.delete("/api/admin/users/:id", auth, requireAdmin, async (req, res) => {
     return res.status(400).json({ error: "Vous ne pouvez pas supprimer votre propre compte admin" });
   }
 
+  const client = await pool.connect();
+
   try {
-    const existing = await pool.query(
-      `SELECT id, role, status FROM users WHERE id = $1 LIMIT 1`,
+    await client.query("BEGIN");
+
+    const userCheck = await client.query(
+      `SELECT id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at
+       FROM users
+       WHERE id = $1`,
       [id]
     );
 
-    if (!existing.rows[0]) {
+    if (!userCheck.rows[0]) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Utilisateur introuvable" });
     }
 
-    if (existing.rows[0].role === "admin") {
-      return res.status(403).json({ error: "Par sécurité, un compte admin ne peut pas être supprimé depuis cette interface" });
-    }
-
-    const deletedUser = await pool.query(
-      `UPDATE users
-       SET status = 'deleted'
-       WHERE id = $1
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+    await client.query(
+      `DELETE FROM projects
+       WHERE organization_id IN (
+         SELECT id FROM organizations WHERE created_by = $1
+       )`,
       [id]
     );
+
+    await client.query(
+      `DELETE FROM organizations
+       WHERE created_by = $1`,
+      [id]
+    );
+
+    await client.query(
+      `DELETE FROM projects
+       WHERE user_id = $1 OR created_by = $1`,
+      [id]
+    );
+
+    const deletedUser = await client.query(
+      `DELETE FROM users
+       WHERE id = $1
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
+      [id]
+    );
+
+    await client.query("COMMIT");
 
     res.json({
       ok: true,
       deletedUser: formatUser(deletedUser.rows[0])
     });
   } catch (err) {
+    await client.query("ROLLBACK");
     console.error("Erreur suppression utilisateur", err);
     res.status(500).json({ error: "Erreur suppression utilisateur" });
+  } finally {
+    client.release();
   }
 });
 
