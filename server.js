@@ -63,6 +63,7 @@ function formatUser(user) {
     passationsQuota: quota,
     passationsUsed: used,
     passationsRemaining: Math.max(0, quota - used),
+    organizationId: user.organization_id || user.organizationId || null,
     createdAt: user.created_at || null
   };
 }
@@ -255,6 +256,17 @@ async function initDb() {
   await pool.query(`
     ALTER TABLE organizations
     ADD COLUMN IF NOT EXISTS passations_used INTEGER DEFAULT 0;
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS organization_users (
+      id SERIAL PRIMARY KEY,
+      organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL DEFAULT 'member',
+      created_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE (organization_id, user_id)
+    );
   `);
 
   await pool.query(`
@@ -787,6 +799,40 @@ async function ensureDirectClientOrganization(userId) {
   return created.rows[0].id;
 }
 
+async function getUserPrimaryOrganizationId(userId) {
+  const membership = await pool.query(
+    `SELECT organization_id
+     FROM organization_users
+     WHERE user_id = $1
+     ORDER BY created_at ASC
+     LIMIT 1`,
+    [userId]
+  );
+
+  if (membership.rows[0]?.organization_id) {
+    return membership.rows[0].organization_id;
+  }
+
+  return ensureDirectClientOrganization(userId);
+}
+
+async function addUserToOrganization({ organizationId, userId, role = "member" }) {
+  const orgId = Number(organizationId);
+  const uid = Number(userId);
+  if (!Number.isInteger(orgId) || !Number.isInteger(uid)) return null;
+
+  const result = await pool.query(
+    `INSERT INTO organization_users (organization_id, user_id, role)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (organization_id, user_id)
+     DO UPDATE SET role = EXCLUDED.role
+     RETURNING *`,
+    [orgId, uid, role || "member"]
+  );
+
+  return result.rows[0];
+}
+
 
 app.post("/api/staging/bootstrap-admin", async (req, res) => {
   const bootstrapSecret = process.env.STAGING_ADMIN_BOOTSTRAP_SECRET || "bootstrap-carole-2026";
@@ -863,6 +909,7 @@ app.get("/debug-version", (req, res) => {
     hasCreatorFields: true,
     hasProjectCurrentStep: true,
     hasProjectCloneRoute: true,
+    hasOrganizationUsers: true,
     hasBackendTransmissionSubmit: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
@@ -1076,7 +1123,7 @@ app.get("/api/me", auth, async (req, res) => {
 
 app.get("/api/me/organization-quota", auth, async (req, res) => {
   try {
-    const organizationId = await ensureDirectClientOrganization(req.user.id);
+    const organizationId = await getUserPrimaryOrganizationId(req.user.id);
 
     if (!organizationId) {
       return res.json({ organization: null });
@@ -1220,7 +1267,10 @@ app.get("/api/projects", auth, async (req, res) => {
        o.passations_used AS organization_passations_used
      FROM projects p
      LEFT JOIN organizations o ON o.id = p.organization_id
+     LEFT JOIN organization_users ou ON ou.organization_id = p.organization_id AND ou.user_id = $1
      WHERE p.user_id = $1
+        OR p.created_by = $1
+        OR ou.user_id IS NOT NULL
      ORDER BY p.updated_at DESC`,
     [req.user.id]
   );
@@ -1303,7 +1353,7 @@ app.post("/api/projects", auth, async (req, res) => {
   let finalOrganizationId = organizationId || null;
 
   if (!finalOrganizationId) {
-    finalOrganizationId = await ensureDirectClientOrganization(req.user.id);
+    finalOrganizationId = await getUserPrimaryOrganizationId(req.user.id);
   }
 
   if (projectId) {
@@ -1319,7 +1369,12 @@ app.post("/api/projects", auth, async (req, res) => {
            passation_logo_name = COALESCE($8, passation_logo_name),
            passation_logo_data_url = COALESCE($9, passation_logo_data_url),
            updated_at = NOW()
-       WHERE id = $10 AND user_id = $11
+       WHERE id = $10
+         AND (
+           user_id = $11
+           OR created_by = $11
+           OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $11)
+         )
        RETURNING *`,
       [
         title || null,
@@ -1389,6 +1444,7 @@ app.get("/api/projects/:id", auth, async (req, res) => {
            p.user_id = $2
            OR p.created_by = $2
            OR o.created_by = $2
+           OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = p.organization_id AND ou.user_id = $2)
            OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
          )
        LIMIT 1`,
@@ -1451,7 +1507,12 @@ app.delete("/api/projects/:id", auth, async (req, res) => {
     const existing = await client.query(
       `SELECT id, title, status, data
        FROM projects
-       WHERE id = $1 AND user_id = $2
+       WHERE id = $1
+         AND (
+           user_id = $2
+           OR created_by = $2
+           OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $2)
+         )
        FOR UPDATE`,
       [numericId, req.user.id]
     );
@@ -1484,7 +1545,12 @@ app.delete("/api/projects/:id", auth, async (req, res) => {
 
     const deleted = await client.query(
       `DELETE FROM projects
-       WHERE id = $1 AND user_id = $2
+       WHERE id = $1
+         AND (
+           user_id = $2
+           OR created_by = $2
+           OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $2)
+         )
        RETURNING id, title`,
       [numericId, req.user.id]
     );
@@ -1596,7 +1662,7 @@ app.put("/api/projects/:id", auth, async (req, res) => {
     : data;
 
   if (!finalOrganizationId) {
-    finalOrganizationId = await ensureDirectClientOrganization(req.user.id);
+    finalOrganizationId = await getUserPrimaryOrganizationId(req.user.id);
   }
 
   const result = await pool.query(
@@ -1611,7 +1677,12 @@ app.put("/api/projects/:id", auth, async (req, res) => {
          passation_logo_name = COALESCE($8, passation_logo_name),
          passation_logo_data_url = COALESCE($9, passation_logo_data_url),
          updated_at = NOW()
-     WHERE id = $10 AND user_id = $11
+     WHERE id = $10
+       AND (
+         user_id = $11
+         OR created_by = $11
+         OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $11)
+       )
      RETURNING *`,
     [
       title || null,
@@ -1813,10 +1884,14 @@ app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
       u.passations_used,
       u.created_at,
       COUNT(p.id)::int AS projects_count,
-      MAX(p.updated_at) AS last_project_update
+      MAX(p.updated_at) AS last_project_update,
+      ou.organization_id,
+      org.name AS organization_name
     FROM users u
     LEFT JOIN projects p ON p.user_id = u.id
-    GROUP BY u.id
+    LEFT JOIN organization_users ou ON ou.user_id = u.id
+    LEFT JOIN organizations org ON org.id = ou.organization_id
+    GROUP BY u.id, ou.organization_id, org.name
     ORDER BY u.created_at DESC
   `);
 
@@ -1842,6 +1917,8 @@ app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
         passationsQuota: quota,
         passationsUsed: used,
         passationsRemaining: Math.max(0, quota - used),
+        organizationId: row.organization_id || null,
+        organizationName: row.organization_name || "",
         createdAt: row.created_at,
         projectsCount: row.projects_count,
         lastProjectUpdate: row.last_project_update,
@@ -1861,10 +1938,26 @@ app.get("/api/admin/organizations", auth, requireAdmin, async (req, res) => {
         u.last_name AS owner_last_name,
         u.company_name AS owner_company_name,
         u.role AS owner_role,
-        COUNT(DISTINCT p.id)::int AS projects_count
+        COUNT(DISTINCT p.id)::int AS projects_count,
+        COALESCE(
+          json_agg(
+            DISTINCT jsonb_build_object(
+              'id', ou_user.id,
+              'email', ou_user.email,
+              'firstName', ou_user.first_name,
+              'lastName', ou_user.last_name,
+              'companyName', ou_user.company_name,
+              'jobTitle', ou_user.job_title,
+              'role', ou.role
+            )
+          ) FILTER (WHERE ou_user.id IS NOT NULL),
+          '[]'
+        ) AS organization_users
       FROM organizations o
       LEFT JOIN users u ON u.id = o.created_by
       LEFT JOIN projects p ON p.organization_id = o.id
+      LEFT JOIN organization_users ou ON ou.organization_id = o.id
+      LEFT JOIN users ou_user ON ou_user.id = ou.user_id
       WHERE o.type = 'client'
         AND NOT (
           LOWER(TRIM(o.name)) = LOWER(TRIM(COALESCE(u.company_name, '')))
@@ -1887,7 +1980,8 @@ app.get("/api/admin/organizations", auth, requireAdmin, async (req, res) => {
           row.owner_company_name ||
           row.owner_email ||
           "—",
-        projectsCount: Number(row.projects_count || 0)
+        projectsCount: Number(row.projects_count || 0),
+        users: Array.isArray(row.organization_users) ? row.organization_users : []
       }))
     });
   } catch (err) {
@@ -1980,6 +2074,101 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
   } catch (err) {
     console.error("Erreur mise à jour passations organisation", err);
     res.status(500).json({ error: "Erreur mise à jour passations client final" });
+  }
+});
+
+app.post("/api/admin/organizations/:id/users", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { email, password, firstName, lastName, jobTitle, role } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email et mot de passe requis" });
+  }
+
+  try {
+    const orgResult = await pool.query(`SELECT * FROM organizations WHERE id = $1 LIMIT 1`, [id]);
+    const org = orgResult.rows[0];
+    if (!org) return res.status(404).json({ error: "Organisation introuvable" });
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const userResult = await pool.query(
+      `INSERT INTO users (email, password_hash, first_name, last_name, company_name, job_title, role, must_change_password)
+       VALUES ($1, $2, $3, $4, $5, $6, 'client', true)
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, must_change_password, passations_quota, passations_used, created_at`,
+      [
+        email.toLowerCase(),
+        passwordHash,
+        firstName || "",
+        lastName || "",
+        org.name || "",
+        jobTitle || "",
+      ]
+    );
+
+    const user = userResult.rows[0];
+    await addUserToOrganization({ organizationId: id, userId: user.id, role: role || "member" });
+
+    const loginUrl = `${FRONTEND_URL}/login.html?redirect=account.html%3Ftab%3Dsecurite%26firstLogin%3D1`;
+    const mailResult = await sendTransactionalEmail({
+      to: user.email,
+      subject: "Votre accès Shift Studio est créé",
+      text:
+`Bonjour ${firstName || ""},
+
+Votre compte Shift Studio a été créé et rattaché à l’entreprise ${org.name || ""}.
+
+Vous pouvez vous connecter ici :
+${loginUrl}
+
+Identifiant : ${user.email}
+Mot de passe temporaire : ${password}
+
+Après connexion avec ce mot de passe temporaire, vous serez invité à choisir votre propre mot de passe.
+
+L’équipe Into The Shift`,
+      html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.5">
+  <p>Bonjour ${escapeHtml(firstName || "")},</p>
+  <p>Votre compte <strong>Shift Studio</strong> a été créé et rattaché à l’entreprise <strong>${escapeHtml(org.name || "")}</strong>.</p>
+  <p><a href="${loginUrl}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:8px;text-decoration:none;font-weight:bold">Me connecter</a></p>
+  <p><strong>Identifiant :</strong> ${escapeHtml(user.email)}</p>
+  <p><strong>Mot de passe temporaire :</strong> ${escapeHtml(password)}</p>
+  <p>Après connexion avec ce mot de passe temporaire, vous serez invité à choisir votre propre mot de passe.</p>
+  <p>L’équipe Into The Shift</p>
+</div>`
+    });
+
+    res.status(201).json({
+      user: formatUser({ ...user, organization_id: Number(id) }),
+      emailSent: mailResult.sent,
+      emailStatus: mailResult.reason || "SENT"
+    });
+  } catch (err) {
+    if (err.code === "23505") return res.status(409).json({ error: "Cet email existe déjà" });
+    console.error("POST /api/admin/organizations/:id/users", err);
+    res.status(500).json({ error: "Erreur création utilisateur rattaché" });
+  }
+});
+
+app.patch("/api/admin/users/:id/organization", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { organizationId, role } = req.body;
+
+  if (!organizationId) return res.status(400).json({ error: "Organisation requise" });
+
+  try {
+    const userResult = await pool.query(`SELECT * FROM users WHERE id = $1 LIMIT 1`, [id]);
+    if (!userResult.rows[0]) return res.status(404).json({ error: "Utilisateur introuvable" });
+
+    const orgResult = await pool.query(`SELECT * FROM organizations WHERE id = $1 LIMIT 1`, [organizationId]);
+    if (!orgResult.rows[0]) return res.status(404).json({ error: "Organisation introuvable" });
+
+    await addUserToOrganization({ organizationId, userId: id, role: role || "member" });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /api/admin/users/:id/organization", err);
+    res.status(500).json({ error: "Erreur rattachement utilisateur" });
   }
 });
 
@@ -2595,7 +2784,8 @@ app.post("/api/admin/users", auth, requireAdmin, async (req, res) => {
     firstName,
     lastName,
     companyName,
-    role
+    role,
+    organizationId
   } = req.body;
 
   if (!email || !password) {
@@ -2622,7 +2812,9 @@ app.post("/api/admin/users", auth, requireAdmin, async (req, res) => {
 
     const user = userResult.rows[0];
 
-    if (safeRole === "client" && companyName) {
+    if (safeRole === "client" && organizationId) {
+      await addUserToOrganization({ organizationId, userId: user.id, role: "member" });
+    } else if (safeRole === "client" && companyName) {
       await ensureDirectClientOrganization(user.id);
     }
 
