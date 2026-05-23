@@ -458,6 +458,41 @@ function normalizeProjectStatusValue(value = "") {
   return "draft";
 }
 
+
+function requestMarksProjectAsSent(data = {}, body = {}) {
+  const d = data && typeof data === "object" ? data : {};
+  const payload = d.payload && typeof d.payload === "object" ? d.payload : {};
+  const state = d.state && typeof d.state === "object" ? d.state : {};
+  const rawStatus = String(body.status || d.status || payload.status || state.status || "").toLowerCase();
+
+  return (
+    rawStatus === "sent" ||
+    rawStatus === "submitted" ||
+    rawStatus === "transmitted" ||
+    rawStatus.includes("transmis") ||
+    body.configTransmise === true ||
+    body.config_transmise === true ||
+    body.submitted === true ||
+    d.configTransmise === true ||
+    d.config_transmise === true ||
+    d.submitted === true ||
+    payload.configTransmise === true ||
+    payload.config_transmise === true ||
+    payload.submitted === true ||
+    state.configTransmise === true ||
+    state.config_transmise === true ||
+    state.submitted === true ||
+    d.transmission?.status === "sent" ||
+    Boolean(d.transmission?.submitted_at || d.submitted_at)
+  );
+}
+
+function resolveIncomingProjectStatus(status, data = {}, body = {}) {
+  let normalized = normalizeProjectStatusValue(status || data?.status || body?.status || "");
+  if (requestMarksProjectAsSent(data, body) && normalized === "draft") normalized = "sent";
+  return normalized;
+}
+
 function getProjectNestedData(data = {}) {
   if (!data || typeof data !== "object") return {};
   const payload = data.payload && typeof data.payload === "object" ? data.payload : {};
@@ -962,7 +997,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-project-isolation-v6-user-org-guard",
+    version: "server-status-archive-cleanup-v7",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
     hasNoRecreateDeletedProjectGuard: true,
@@ -1411,7 +1446,7 @@ app.post("/api/projects", auth, async (req, res) => {
     data?.payload?.config_transmise === true ||
     data?.payload?.submitted === true;
 
-  const finalStatus = status || (configSent ? "sent" : "draft");
+  const finalStatus = resolveIncomingProjectStatus(status || (configSent ? "sent" : "draft"), data || {}, req.body || {});
   const finalStep = currentStep || data?.step || data?.current_step || data?.currentStep || null;
   const finalCampaignStartDate = extractCampaignStartDate(data || {}, req.body || {});
   const finalCampaignEndDate = extractCampaignEndDate(data || {}, req.body || {});
@@ -1439,6 +1474,25 @@ app.post("/api/projects", auth, async (req, res) => {
   }
 
   if (projectId) {
+    const currentProjectResult = await pool.query(
+      `SELECT status, archived_at
+       FROM projects
+       WHERE id = $1
+         AND (
+           user_id = $2
+           OR created_by = $2
+           OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $2)
+           OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
+         )
+       LIMIT 1`,
+      [projectId, req.user.id]
+    );
+
+    const currentProject = currentProjectResult.rows[0];
+    if (currentProject && (normalizeProjectStatusValue(currentProject.status) === "archived" || currentProject.archived_at) && finalStatus !== "archived") {
+      return res.status(409).json({ error: "Projet archivé : restauration requise avant modification.", code: "PROJECT_ARCHIVED_LOCKED" });
+    }
+
     const updateResult = await pool.query(
       `UPDATE projects
        SET title = COALESCE($1, title),
@@ -1829,7 +1883,7 @@ app.put("/api/projects/:id", auth, async (req, res) => {
     data?.submitted === true;
 
   if (!finalStatus) {
-    finalStatus = configSent ? "sent" : "draft";
+    finalStatus = resolveIncomingProjectStatus(configSent ? "sent" : "draft", data || {}, req.body || {});
   }
 
   const normalizedData = data && typeof data === "object"
@@ -2462,6 +2516,7 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
       p.results_url,
       p.published_at,
       p.unpublished_at,
+      p.archived_at,
       p.campaign_start_date,
       p.campaign_end_date,
       p.passation_logo_name,
@@ -2544,6 +2599,8 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
         published_at: row.published_at || null,
         unpublishedAt: row.unpublished_at || null,
         unpublished_at: row.unpublished_at || null,
+        archivedAt: row.archived_at || null,
+        archived_at: row.archived_at || null,
         campaignStartDate: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
         campaignEndDate: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
         campaign_start_date: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
