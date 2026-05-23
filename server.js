@@ -352,6 +352,11 @@ async function initDb() {
 
   await pool.query(`
     ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
     ADD COLUMN IF NOT EXISTS end_alert_7_sent_at TIMESTAMP;
   `);
 
@@ -1347,6 +1352,8 @@ app.get("/api/projects", auth, async (req, res) => {
         resultsUrl: row.results_url || "",
         publishedAt: row.published_at || null,
         unpublishedAt: row.unpublished_at || null,
+        archivedAt: row.archived_at || null,
+        archived_at: row.archived_at || null,
         campaignStartDate: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
         campaignEndDate: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
         campaign_start_date: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
@@ -1528,6 +1535,8 @@ app.get("/api/projects/:id", auth, async (req, res) => {
         resultsUrl: row.results_url || "",
         publishedAt: row.published_at || null,
         unpublishedAt: row.unpublished_at || null,
+        archivedAt: row.archived_at || null,
+        archived_at: row.archived_at || null,
         campaignStartDate: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
         campaignEndDate: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
         campaign_start_date: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
@@ -1618,6 +1627,79 @@ app.delete("/api/projects/:id", auth, async (req, res) => {
     return res.status(500).json({ error: "Erreur suppression projet." });
   } finally {
     client.release();
+  }
+});
+
+
+app.patch("/api/projects/:id/archive", auth, async (req, res) => {
+  const { id } = req.params;
+  const numericId = Number(id);
+
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: "ID projet invalide." });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE projects
+       SET status = 'archived',
+           archived_at = COALESCE(archived_at, NOW()),
+           updated_at = NOW()
+       WHERE id = $1
+         AND (
+           user_id = $2
+           OR created_by = $2
+           OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $2)
+           OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
+         )
+       RETURNING *`,
+      [numericId, req.user.id]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    res.json({ ok: true, project: result.rows[0] });
+  } catch (err) {
+    console.error("PATCH /api/projects/:id/archive", err);
+    res.status(500).json({ error: "Erreur archivage projet" });
+  }
+});
+
+app.patch("/api/projects/:id/restore", auth, async (req, res) => {
+  const { id } = req.params;
+  const numericId = Number(id);
+
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return res.status(400).json({ error: "ID projet invalide." });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE projects
+       SET status = CASE WHEN COALESCE(results_url, '') <> '' OR COALESCE(share_url, '') <> '' THEN 'unpublished' ELSE 'draft' END,
+           archived_at = NULL,
+           updated_at = NOW()
+       WHERE id = $1
+         AND (
+           user_id = $2
+           OR created_by = $2
+           OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $2)
+           OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
+         )
+       RETURNING *`,
+      [numericId, req.user.id]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    res.json({ ok: true, project: result.rows[0] });
+  } catch (err) {
+    console.error("PATCH /api/projects/:id/restore", err);
+    res.status(500).json({ error: "Erreur restauration projet" });
   }
 });
 
@@ -1824,6 +1906,8 @@ app.get("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =>
               'publishedAt', p.published_at,
               'unpublished_at', p.unpublished_at,
               'unpublishedAt', p.unpublished_at,
+              'archived_at', p.archived_at,
+              'archivedAt', p.archived_at,
               'campaign_start_date', p.campaign_start_date,
               'campaignStartDate', p.campaign_start_date,
               'campaign_end_date', p.campaign_end_date,
@@ -2497,6 +2581,8 @@ app.get("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
         resultsUrl: row.results_url || "",
         publishedAt: row.published_at || null,
         unpublishedAt: row.unpublished_at || null,
+        archivedAt: row.archived_at || null,
+        archived_at: row.archived_at || null,
         campaignStartDate: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
         campaignEndDate: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
         campaign_start_date: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
@@ -2523,7 +2609,7 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
   const { id } = req.params;
   const { status } = req.body;
 
-  const allowedStatuses = ["draft", "sent", "published", "unpublished"];
+  const allowedStatuses = ["draft", "sent", "published", "unpublished", "archived"];
 
   if (!allowedStatuses.includes(status)) {
     return res.status(400).json({ error: "Statut invalide" });
@@ -2533,7 +2619,8 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
     const result = await pool.query(
       `UPDATE projects
        SET status = $1,
-           unpublished_at = CASE WHEN $1 = 'unpublished' THEN COALESCE(unpublished_at, NOW()) ELSE NULL END,
+           unpublished_at = CASE WHEN $1 = 'unpublished' THEN COALESCE(unpublished_at, NOW()) ELSE unpublished_at END,
+           archived_at = CASE WHEN $1 = 'archived' THEN COALESCE(archived_at, NOW()) ELSE NULL END,
            published_at = CASE WHEN $1 = 'published' THEN COALESCE(published_at, NOW()) ELSE published_at END,
            updated_at = NOW()
        WHERE id = $2
@@ -2577,7 +2664,7 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
   const finalCampaignStartDate = normalizeDateValue(campaignStartDate || campaign_start_date);
   const finalCampaignEndDate = normalizeDateValue(campaignEndDate || campaign_end_date);
 
-  const allowedStatuses = ["draft", "sent", "published", "unpublished"];
+  const allowedStatuses = ["draft", "sent", "published", "unpublished", "archived"];
 
   if (!allowedStatuses.includes(finalStatus)) {
     return res.status(400).json({ error: "Statut invalide" });
@@ -2622,6 +2709,10 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
         campaign_end_date = COALESCE($5, campaign_end_date),
         unpublished_at = CASE
           WHEN $1 = 'unpublished' THEN COALESCE(unpublished_at, NOW())
+          ELSE unpublished_at
+        END,
+        archived_at = CASE
+          WHEN $1 = 'archived' THEN COALESCE(archived_at, NOW())
           ELSE NULL
         END,
         published_at = CASE
