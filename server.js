@@ -437,6 +437,27 @@ function normalizeDateValue(value) {
   return d.toISOString().slice(0, 10);
 }
 
+
+function isValidHttpsUrl(value) {
+  const url = String(value || "").trim();
+  if (!url.startsWith("https://")) return false;
+  try {
+    new URL(url);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function normalizeProjectStatusValue(value = "") {
+  const s = String(value || "").toLowerCase();
+  if (s === "archived" || s.includes("archiv")) return "archived";
+  if (s === "unpublished" || s.includes("dépub") || s.includes("depub")) return "unpublished";
+  if (s === "published" || s.includes("publi") || s.includes("ligne")) return "published";
+  if (s === "sent" || s === "submitted" || s === "transmitted" || s.includes("transmis")) return "sent";
+  return "draft";
+}
+
 function getProjectNestedData(data = {}) {
   if (!data || typeof data !== "object") return {};
   const payload = data.payload && typeof data.payload === "object" ? data.payload : {};
@@ -1646,6 +1667,7 @@ app.patch("/api/projects/:id/archive", auth, async (req, res) => {
            archived_at = COALESCE(archived_at, NOW()),
            updated_at = NOW()
        WHERE id = $1
+         AND status = 'unpublished'
          AND (
            user_id = $2
            OR created_by = $2
@@ -1657,7 +1679,7 @@ app.patch("/api/projects/:id/archive", auth, async (req, res) => {
     );
 
     if (!result.rows[0]) {
-      return res.status(404).json({ error: "Projet introuvable" });
+      return res.status(400).json({ error: "Un projet doit d’abord être dépublié avant d’être archivé." });
     }
 
     res.json({ ok: true, project: result.rows[0] });
@@ -1678,7 +1700,7 @@ app.patch("/api/projects/:id/restore", auth, async (req, res) => {
   try {
     const result = await pool.query(
       `UPDATE projects
-       SET status = CASE WHEN COALESCE(results_url, '') <> '' OR COALESCE(share_url, '') <> '' THEN 'unpublished' ELSE 'draft' END,
+       SET status = 'unpublished',
            archived_at = NULL,
            updated_at = NOW()
        WHERE id = $1
@@ -1708,9 +1730,17 @@ app.post("/api/projects/:id/clone", auth, async (req, res) => {
 
   try {
     const sourceResult = await pool.query(
-      `SELECT *
-       FROM projects
-       WHERE id = $1 AND user_id = $2
+      `SELECT p.*
+       FROM projects p
+       LEFT JOIN organizations o ON o.id = p.organization_id
+       WHERE p.id = $1
+         AND (
+           p.user_id = $2
+           OR p.created_by = $2
+           OR o.created_by = $2
+           OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = p.organization_id AND ou.user_id = $2)
+           OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
+         )
        LIMIT 1`,
       [id, req.user.id]
     );
@@ -1721,8 +1751,9 @@ app.post("/api/projects/:id/clone", auth, async (req, res) => {
       return res.status(404).json({ error: "Projet introuvable" });
     }
 
-    if (!["sent", "published", "unpublished", "results"].includes(String(source.status || "").toLowerCase())) {
-      return res.status(400).json({ error: "Le clonage est disponible après transmission ou publication." });
+    const sourceStatus = normalizeProjectStatusValue(source.status);
+    if (!["sent", "published", "unpublished", "archived"].includes(sourceStatus)) {
+      return res.status(400).json({ error: "Le clonage est disponible après transmission, publication, dépublication ou archivage." });
     }
 
     const clonedData = { ...(source.data || {}) };
@@ -1731,20 +1762,38 @@ app.post("/api/projects/:id/clone", auth, async (req, res) => {
     clonedData.config_transmise = false;
     clonedData.submitted = false;
     clonedData.submitted_at = null;
+    clonedData.status = "draft";
     clonedData.step = "questions";
     clonedData.current_step = "questions";
+    clonedData.shareUrl = "";
+    clonedData.share_url = "";
+    clonedData.resultsUrl = "";
+    clonedData.results_url = "";
+    clonedData.campaignStartDate = "";
+    clonedData.campaign_start_date = "";
+    clonedData.campaignEndDate = "";
+    clonedData.campaign_end_date = "";
+    if (clonedData.parametrage && typeof clonedData.parametrage === "object") {
+      clonedData.parametrage.date_lancement = "";
+      clonedData.parametrage.dateLancement = "";
+      clonedData.parametrage.date_cloture = "";
+      clonedData.parametrage.dateCloture = "";
+    }
 
     const clonedTitle = `Copie de ${source.title || "Autodiagnostic"}`;
 
     const result = await pool.query(
-      `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step)
-       VALUES ($1, $2, 'draft', $3, $1, $4, 'questions')
+      `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step, passation_logo_name, passation_logo_data_url)
+       VALUES ($1, $2, 'draft', $3, $4, $5, 'questions', $6, $7)
        RETURNING *`,
       [
-        req.user.id,
+        source.user_id || req.user.id,
         clonedTitle,
         clonedData,
-        source.organization_id || null
+        req.user.id,
+        source.organization_id || null,
+        source.passation_logo_name || null,
+        source.passation_logo_data_url || null
       ]
     );
 
@@ -2616,6 +2665,15 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
   }
 
   try {
+    const currentResult = await pool.query(`SELECT status FROM projects WHERE id = $1 LIMIT 1`, [id]);
+    if (!currentResult.rows[0]) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+    const currentStatus = normalizeProjectStatusValue(currentResult.rows[0].status);
+    if (status === "archived" && currentStatus !== "unpublished") {
+      return res.status(400).json({ error: "Un projet doit d’abord être dépublié avant d’être archivé." });
+    }
+
     const result = await pool.query(
       `UPDATE projects
        SET status = $1,
@@ -2678,9 +2736,17 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
     return res.status(400).json({ error: "URL de diffusion et URL résultats obligatoires pour publier." });
   }
 
+  if (finalStatus === "published" && (!isValidHttpsUrl(finalShareUrl) || !isValidHttpsUrl(finalResultsUrl))) {
+    return res.status(400).json({ error: "Les URLs doivent être complètes et commencer par https://" });
+  }
+
+  if ((finalShareUrl && !isValidHttpsUrl(finalShareUrl)) || (finalResultsUrl && !isValidHttpsUrl(finalResultsUrl))) {
+    return res.status(400).json({ error: "Les URLs doivent être complètes et commencer par https://" });
+  }
+
   try {
     const existingResult = await pool.query(
-      `SELECT share_url, results_url FROM projects WHERE id = $1 LIMIT 1`,
+      `SELECT status, share_url, results_url FROM projects WHERE id = $1 LIMIT 1`,
       [id]
     );
 
@@ -2689,6 +2755,11 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
     }
 
     const existing = existingResult.rows[0];
+    const currentStatus = normalizeProjectStatusValue(existing.status);
+
+    if (finalStatus === "archived" && currentStatus !== "unpublished") {
+      return res.status(400).json({ error: "Un projet doit d’abord être dépublié avant d’être archivé." });
+    }
 
     const nextShareUrl = (finalStatus === "published" || finalStatus === "unpublished")
       ? (finalShareUrl || existing.share_url || "")
