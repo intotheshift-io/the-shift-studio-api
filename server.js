@@ -458,6 +458,61 @@ function normalizeProjectStatusValue(value = "") {
   return "draft";
 }
 
+function cleanProjectDisplayTitle(value = "") {
+  const cleaned = String(value || "")
+    .replace(/^\s*Autodiagnostic\s*[-–—:]?\s*/i, "")
+    .replace(/^\s*Autodiag\s*[-–—:]?\s*/i, "")
+    .trim();
+
+  if (!cleaned || /^(mon projet|nouveau projet|mon premier customizer)$/i.test(cleaned)) {
+    return "";
+  }
+
+  return cleaned;
+}
+
+function pickProjectDisplayTitle(...values) {
+  for (const value of values) {
+    const cleaned = cleanProjectDisplayTitle(value);
+    if (cleaned) return cleaned;
+  }
+  return "Projet sans titre";
+}
+
+function extractProjectDisplayTitle(data = {}, fallbackTitle = "") {
+  const d = data && typeof data === "object" ? data : {};
+  const payload = d.payload && typeof d.payload === "object" ? d.payload : {};
+  const state = d.state && typeof d.state === "object" ? d.state : {};
+  const param = getProjectParamData(d);
+
+  return pickProjectDisplayTitle(
+    param.titre_repondants,
+    param.titreRespondants,
+    param.titre_visible_repondants,
+    param.titreVisibleRepondants,
+    param.titre_visible,
+    param.titreVisible,
+    param.nom,
+    param.titre,
+    payload.titre_repondants,
+    payload.titreRespondants,
+    payload.titre_autodiag,
+    payload.autodiagTitle,
+    payload.title,
+    payload.titre,
+    state.titre_repondants,
+    state.titreRespondants,
+    state.autodiagTitle,
+    state.title,
+    d.titre_repondants,
+    d.titreRespondants,
+    d.autodiagTitle,
+    d.title,
+    fallbackTitle
+  );
+}
+
+
 
 function requestMarksProjectAsSent(data = {}, body = {}) {
   const d = data && typeof data === "object" ? data : {};
@@ -997,7 +1052,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-archive-restore-admin-draft-v8",
+    version: "server-status-archive-cleanup-v7",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
     hasNoRecreateDeletedProjectGuard: true,
@@ -1048,14 +1103,7 @@ app.post("/api/register", async (req, res) => {
 
     const user = userResult.rows[0];
 
-    const organizationId = await ensureDirectClientOrganization(user.id);
-
-    const projectResult = await pool.query(
-      `INSERT INTO projects (user_id, title, data, created_by, organization_id)
-       VALUES ($1, $2, $3, $1, $4)
-       RETURNING *`,
-      [user.id, "Mon premier customizer", {}, organizationId || null]
-    );
+    await ensureDirectClientOrganization(user.id);
 
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role || "client" },
@@ -1063,7 +1111,7 @@ app.post("/api/register", async (req, res) => {
       { expiresIn: "7d" }
     );
 
-    res.json({ token, user: formatUser(user), project: projectResult.rows[0] });
+    res.json({ token, user: formatUser(user), project: null });
   } catch (err) {
     if (err.code === "23505") {
       return res.status(409).json({ error: "Cet email existe déjà" });
@@ -1452,6 +1500,7 @@ app.post("/api/projects", auth, async (req, res) => {
   const finalCampaignEndDate = extractCampaignEndDate(data || {}, req.body || {});
   const finalPassationLogoName = extractPassationLogoName(data || {}, req.body || {});
   const finalPassationLogoDataUrl = extractPassationLogoDataUrl(data || {}, req.body || {});
+  const finalTitle = extractProjectDisplayTitle(data || {}, title || "");
 
   const normalizedData = data && typeof data === "object"
     ? {
@@ -1513,7 +1562,7 @@ app.post("/api/projects", auth, async (req, res) => {
          )
        RETURNING *`,
       [
-        title || null,
+        finalTitle || null,
         finalStatus,
         normalizedData || null,
         finalOrganizationId || null,
@@ -1547,7 +1596,7 @@ app.post("/api/projects", auth, async (req, res) => {
      RETURNING *`,
     [
       req.user.id,
-      title || "Nouveau projet",
+      finalTitle,
       finalStatus,
       normalizedData || {},
       finalOrganizationId || null,
@@ -1751,77 +1800,26 @@ app.patch("/api/projects/:id/restore", auth, async (req, res) => {
     return res.status(400).json({ error: "ID projet invalide." });
   }
 
-  if (!req.user || req.user.role !== "admin") {
-    return res.status(403).json({ error: "La restauration d’une archive est réservée à l’équipe Into The Shift." });
-  }
-
   try {
-    const sourceResult = await pool.query(
-      `SELECT * FROM projects WHERE id = $1 LIMIT 1`,
-      [numericId]
-    );
-
-    const source = sourceResult.rows[0];
-    if (!source) {
-      return res.status(404).json({ error: "Projet introuvable" });
-    }
-
-    const sourceData = source.data && typeof source.data === "object" ? source.data : {};
-    const restoredData = {
-      ...sourceData,
-      restoredFromArchive: true,
-      restoredFromArchiveAt: new Date().toISOString(),
-      status: "draft",
-      current_step: "questions",
-      currentStep: "questions",
-      step: "questions",
-      configTransmise: false,
-      config_transmise: false,
-      submitted: false,
-      submitted_at: null,
-      shareUrl: "",
-      share_url: "",
-      resultsUrl: "",
-      results_url: "",
-      campaignStartDate: "",
-      campaign_start_date: "",
-      campaignEndDate: "",
-      campaign_end_date: ""
-    };
-
-    if (restoredData.parametrage && typeof restoredData.parametrage === "object") {
-      restoredData.parametrage.date_lancement = "";
-      restoredData.parametrage.dateLancement = "";
-      restoredData.parametrage.date_cloture = "";
-      restoredData.parametrage.dateCloture = "";
-    }
-
-    const baseTitle = String(source.title || "Autodiagnostic").trim();
-    const restoredTitle = /^Restauré\s+-\s+/i.test(baseTitle) ? baseTitle : `Restauré - ${baseTitle}`;
-    restoredData.title = restoredTitle;
-    restoredData.autodiagTitle = restoredTitle;
-    if (restoredData.parametrage && typeof restoredData.parametrage === "object") {
-      restoredData.parametrage.nom = restoredTitle;
-    }
-
     const result = await pool.query(
       `UPDATE projects
-       SET title = $1,
-           status = 'draft',
-           data = $2,
-           current_step = 'questions',
-           share_url = NULL,
-           results_url = NULL,
-           campaign_start_date = NULL,
-           campaign_end_date = NULL,
-           unpublished_at = NULL,
+       SET status = 'unpublished',
            archived_at = NULL,
-           published_at = NULL,
            updated_at = NOW()
-       WHERE id = $3
+       WHERE id = $1
+         AND (
+           user_id = $2
+           OR created_by = $2
+           OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $2)
+           OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
+         )
        RETURNING *`,
-      [restoredTitle, restoredData, numericId]
+      [numericId, req.user.id]
     );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
 
     res.json({ ok: true, project: result.rows[0] });
   } catch (err) {
@@ -1885,7 +1883,10 @@ app.post("/api/projects/:id/clone", auth, async (req, res) => {
       clonedData.parametrage.dateCloture = "";
     }
 
-    const clonedTitle = `Copie de ${source.title || "Autodiagnostic"}`;
+    const sourceTitle = extractProjectDisplayTitle(clonedData, source.title || "");
+    const clonedTitle = `Copie de ${sourceTitle}`;
+    clonedData.title = clonedTitle;
+    clonedData.autodiagTitle = clonedTitle;
 
     const result = await pool.query(
       `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step, passation_logo_name, passation_logo_data_url)
@@ -1927,6 +1928,7 @@ app.put("/api/projects/:id", auth, async (req, res) => {
   const finalCampaignEndDate = extractCampaignEndDate(data || {}, req.body || {});
   const finalPassationLogoName = extractPassationLogoName(data || {}, req.body || {});
   const finalPassationLogoDataUrl = extractPassationLogoDataUrl(data || {}, req.body || {});
+  const finalTitle = extractProjectDisplayTitle(data || {}, title || "");
 
   const configSent =
     data?.configTransmise === true ||
@@ -1975,7 +1977,7 @@ app.put("/api/projects/:id", auth, async (req, res) => {
        )
      RETURNING *`,
     [
-      title || null,
+      finalTitle || null,
       normalizedData || null,
       finalOrganizationId || null,
       finalStatus,
@@ -2607,13 +2609,7 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
 
       return {
         id: row.id,
-        title:
-          data.autodiagTitle ||
-          data.title ||
-          data.titre ||
-          data.projectTitle ||
-          row.title ||
-          "Autodiag sans titre",
+        title: extractProjectDisplayTitle(data, row.title || ""),
         status: row.status || data.status || "brouillon",
         pack:
           row.organization_passations_pack ||
