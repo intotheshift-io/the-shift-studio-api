@@ -492,8 +492,8 @@ function extractProjectDisplayTitle(data = {}, fallbackTitle = "") {
     param.titreVisibleRepondants,
     param.titre_visible,
     param.titreVisible,
-    param.nom,
     param.titre,
+    param.nom,
     payload.titre_repondants,
     payload.titreRespondants,
     payload.titre_autodiag,
@@ -1052,7 +1052,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-status-archive-cleanup-v7",
+    version: "server-title-quota-fix-v8",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
     hasNoRecreateDeletedProjectGuard: true,
@@ -1441,8 +1441,11 @@ app.get("/api/projects", auth, async (req, res) => {
   res.json({
     projects: result.rows.map((row) => {
       const data = row.data || {};
+      const displayTitle = extractProjectDisplayTitle(data, row.title || "");
       return {
         ...row,
+        title: displayTitle,
+        displayTitle,
         organizationName: row.organization_name || "",
         organizationPassationsPack: row.organization_passations_pack || "",
         organizationPassationsQuota: Number(row.organization_passations_quota || 0),
@@ -1643,9 +1646,13 @@ app.get("/api/projects/:id", auth, async (req, res) => {
     const row = result.rows[0];
     const data = row.data || {};
 
+    const displayTitle = extractProjectDisplayTitle(data, row.title || "");
+
     res.json({
       project: {
         ...row,
+        title: displayTitle,
+        displayTitle,
         organizationName: row.organization_name || "",
         organizationPassationsPack: row.organization_passations_pack || "",
         organizationPassationsQuota: Number(row.organization_passations_quota || 0),
@@ -2049,7 +2056,8 @@ app.get("/api/partner/clients", auth, requirePartnerOrAdmin, async (req, res) =>
           json_agg(
             DISTINCT jsonb_build_object(
               'id', p.id,
-              'title', p.title,
+              'title', COALESCE(NULLIF(p.data->'parametrage'->>'titre_repondants', ''), NULLIF(p.data->'parametrage'->>'titreRespondants', ''), NULLIF(p.data->'parametrage'->>'titre_visible_repondants', ''), NULLIF(p.data->'parametrage'->>'titreVisibleRepondants', ''), NULLIF(p.data->'parametrage'->>'titre_visible', ''), NULLIF(p.data->'parametrage'->>'titreVisible', ''), NULLIF(p.data->'parametrage'->>'titre', ''), p.title),
+              'displayTitle', COALESCE(NULLIF(p.data->'parametrage'->>'titre_repondants', ''), NULLIF(p.data->'parametrage'->>'titreRespondants', ''), NULLIF(p.data->'parametrage'->>'titre_visible_repondants', ''), NULLIF(p.data->'parametrage'->>'titreVisibleRepondants', ''), NULLIF(p.data->'parametrage'->>'titre_visible', ''), NULLIF(p.data->'parametrage'->>'titreVisible', ''), NULLIF(p.data->'parametrage'->>'titre', ''), p.title),
               'status', p.status,
               'updated_at', p.updated_at,
               'data', p.data,
