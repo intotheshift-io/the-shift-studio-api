@@ -2734,6 +2734,7 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
     const result = await pool.query(
       `UPDATE projects
        SET status = $1,
+           data = jsonb_set(COALESCE(data, '{}'::jsonb), '{status}', to_jsonb($1::text), true),
            unpublished_at = CASE WHEN $1 = 'unpublished' THEN COALESCE(unpublished_at, NOW()) ELSE unpublished_at END,
            archived_at = CASE WHEN $1 = 'archived' THEN COALESCE(archived_at, NOW()) ELSE NULL END,
            published_at = CASE WHEN $1 = 'published' THEN COALESCE(published_at, NOW()) ELSE published_at END,
@@ -2831,6 +2832,7 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
       UPDATE projects
       SET
         status = $1,
+        data = jsonb_set(COALESCE(data, '{}'::jsonb), '{status}', to_jsonb($1::text), true),
         share_url = $2,
         results_url = $3,
         campaign_start_date = COALESCE($4, campaign_start_date),
