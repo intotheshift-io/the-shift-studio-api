@@ -645,6 +645,123 @@ function extractPassationLogoDataUrl(data = {}, body = {}) {
   );
 }
 
+function getProjectPackUpgradeRequest(data = {}, organization = {}) {
+  const d = data && typeof data === "object" ? data : {};
+  const param = getProjectParamData(d);
+  const packChoice = String(
+    param.pack_choisi ||
+    param.packChoisi ||
+    param.selectedPack ||
+    d.pack_choisi ||
+    d.packChoisi ||
+    d.selectedPack ||
+    ""
+  ).trim();
+
+  const status = String(
+    d.pack_upgrade_status ||
+    d.packUpgradeStatus ||
+    param.pack_upgrade_status ||
+    param.packUpgradeStatus ||
+    ""
+  ).toLowerCase();
+
+  if (!packChoice || packChoice === "current_pack" || packChoice === "existing") {
+    return { requested: false, status: status || "", choice: packChoice };
+  }
+
+  if (status === "approved" || status === "rejected") {
+    return {
+      requested: true,
+      status,
+      choice: packChoice,
+      amount: packChoice === "illimite" ? null : Number(packChoice || 0),
+      unlimited: packChoice === "illimite"
+    };
+  }
+
+  const organizationPack = String(
+    organization.organization_passations_pack ||
+    organization.passations_pack ||
+    organization.passationsPack ||
+    ""
+  ).toLowerCase();
+
+  const currentQuota = Number(
+    organization.organization_passations_quota ??
+    organization.passations_quota ??
+    organization.passationsQuota ??
+    0
+  );
+
+  const currentUsed = Number(
+    organization.organization_passations_used ??
+    organization.passations_used ??
+    organization.passationsUsed ??
+    0
+  );
+
+  const amount = packChoice === "illimite" ? null : Number(packChoice || 0);
+
+  if (packChoice !== "illimite" && (!Number.isFinite(amount) || amount <= 0)) {
+    return { requested: false, status: "", choice: packChoice };
+  }
+
+  if (organizationPack === "illimite" && packChoice !== "illimite") {
+    return { requested: false, status: "not_required", choice: packChoice };
+  }
+
+  return {
+    requested: true,
+    status: "pending",
+    choice: packChoice,
+    amount,
+    currentQuota,
+    currentUsed,
+    currentRemaining: organizationPack === "illimite" ? null : Math.max(0, currentQuota - currentUsed),
+    totalAfter: packChoice === "illimite" ? null : currentQuota + amount,
+    unlimited: packChoice === "illimite"
+  };
+}
+
+function applyPackUpgradeMetadata(data = {}, request = {}, status = "pending") {
+  const safeData = data && typeof data === "object" ? { ...data } : {};
+  const param = safeData.parametrage && typeof safeData.parametrage === "object"
+    ? { ...safeData.parametrage }
+    : {};
+
+  const metadata = {
+    pack_upgrade_requested: request.requested === true,
+    pack_upgrade_status: status,
+    pack_upgrade_choice: request.choice || "",
+    pack_upgrade_amount: request.unlimited ? null : (request.amount || null),
+    pack_upgrade_total_after: request.unlimited ? null : (request.totalAfter || null),
+    pack_upgrade_unlimited: request.unlimited === true,
+    pack_upgrade_updated_at: new Date().toISOString()
+  };
+
+  return {
+    ...safeData,
+    ...metadata,
+    packUpgradeRequested: metadata.pack_upgrade_requested,
+    packUpgradeStatus: metadata.pack_upgrade_status,
+    packUpgradeChoice: metadata.pack_upgrade_choice,
+    packUpgradeAmount: metadata.pack_upgrade_amount,
+    packUpgradeTotalAfter: metadata.pack_upgrade_total_after,
+    packUpgradeUnlimited: metadata.pack_upgrade_unlimited,
+    parametrage: {
+      ...param,
+      ...metadata,
+      packUpgradeRequested: metadata.pack_upgrade_requested,
+      packUpgradeStatus: metadata.pack_upgrade_status,
+      packUpgradeChoice: metadata.pack_upgrade_choice,
+      packUpgradeAmount: metadata.pack_upgrade_amount,
+      packUpgradeTotalAfter: metadata.pack_upgrade_total_after,
+      packUpgradeUnlimited: metadata.pack_upgrade_unlimited
+    }
+  };
+}
+
 function formatDateLongFr(value) {
   if (!value) return "—";
   const d = new Date(value);
@@ -1052,7 +1169,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-title-quota-fix-v8",
+    version: "server-pack-upgrade-validation-v9",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
     hasNoRecreateDeletedProjectGuard: true,
@@ -1076,6 +1193,7 @@ app.get("/debug-version", (req, res) => {
     hasBackendTransmissionSubmit: true,
     hasUserStatusLifecycle: true,
     hasAdminUserProfileFields: true,
+    hasPackUpgradeValidation: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -2813,6 +2931,139 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
 });
 
 
+app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const action = String(req.body?.action || "").toLowerCase();
+
+  if (!["approve", "reject"].includes(action)) {
+    return res.status(400).json({ error: "Action invalide. Utilisez approve ou reject." });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const projectResult = await client.query(
+      `SELECT
+         p.*,
+         o.passations_pack AS organization_passations_pack,
+         o.passations_quota AS organization_passations_quota,
+         o.passations_used AS organization_passations_used
+       FROM projects p
+       LEFT JOIN organizations o ON o.id = p.organization_id
+       WHERE p.id = $1
+       FOR UPDATE`,
+      [id]
+    );
+
+    const project = projectResult.rows[0];
+    if (!project) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    if (!project.organization_id) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Aucun cockpit client n’est rattaché à ce projet." });
+    }
+
+    const request = getProjectPackUpgradeRequest(project.data || {}, project);
+
+    if (!request.requested) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Aucune recharge pack à valider pour ce projet." });
+    }
+
+    if (request.status === "approved" && action === "approve") {
+      await client.query("COMMIT");
+      return res.json({ ok: true, alreadyApproved: true, packUpgrade: request });
+    }
+
+    if (action === "reject") {
+      const rejectedData = applyPackUpgradeMetadata(project.data || {}, request, "rejected");
+      const updatedProject = await client.query(
+        `UPDATE projects
+         SET data = $1::jsonb,
+             updated_at = NOW()
+         WHERE id = $2
+         RETURNING *`,
+        [rejectedData, id]
+      );
+
+      await client.query("COMMIT");
+      return res.json({ ok: true, status: "rejected", project: updatedProject.rows[0] });
+    }
+
+    const orgResult = await client.query(
+      `SELECT * FROM organizations WHERE id = $1 FOR UPDATE`,
+      [project.organization_id]
+    );
+
+    const org = orgResult.rows[0];
+    if (!org) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Cockpit client introuvable." });
+    }
+
+    const approvedData = applyPackUpgradeMetadata(project.data || {}, request, "approved");
+
+    let updatedOrg;
+    if (request.unlimited) {
+      updatedOrg = await client.query(
+        `UPDATE organizations
+         SET passations_pack = 'illimite',
+             passations_quota = 0
+         WHERE id = $1
+         RETURNING *`,
+        [project.organization_id]
+      );
+    } else {
+      const amount = Number(request.amount || 0);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "Montant de recharge invalide." });
+      }
+
+      const currentQuota = Number(org.passations_quota || 0);
+      const nextQuota = currentQuota + amount;
+
+      updatedOrg = await client.query(
+        `UPDATE organizations
+         SET passations_pack = $1,
+             passations_quota = $2
+         WHERE id = $3
+         RETURNING *`,
+        [String(nextQuota), nextQuota, project.organization_id]
+      );
+    }
+
+    const updatedProject = await client.query(
+      `UPDATE projects
+       SET data = $1::jsonb,
+           updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [approvedData, id]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({
+      ok: true,
+      status: "approved",
+      project: updatedProject.rows[0],
+      organization: formatOrganization(updatedOrg.rows[0])
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("PATCH /api/admin/projects/:id/pack-upgrade", err);
+    res.status(500).json({ error: "Erreur validation recharge pack." });
+  } finally {
+    client.release();
+  }
+});
+
 app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
 
@@ -2858,7 +3109,19 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
 
   try {
     const existingResult = await pool.query(
-      `SELECT status, share_url, results_url FROM projects WHERE id = $1 LIMIT 1`,
+      `SELECT
+         p.status,
+         p.share_url,
+         p.results_url,
+         p.data,
+         p.organization_id,
+         o.passations_pack AS organization_passations_pack,
+         o.passations_quota AS organization_passations_quota,
+         o.passations_used AS organization_passations_used
+       FROM projects p
+       LEFT JOIN organizations o ON o.id = p.organization_id
+       WHERE p.id = $1
+       LIMIT 1`,
       [id]
     );
 
@@ -2871,6 +3134,34 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
 
     if (finalStatus === "archived" && currentStatus !== "unpublished") {
       return res.status(400).json({ error: "Un projet doit d’abord être dépublié avant d’être archivé." });
+    }
+
+    if (finalStatus === "published") {
+      const packRequest = getProjectPackUpgradeRequest(existing.data || {}, existing);
+      if (packRequest.requested && packRequest.status === "pending") {
+        return res.status(409).json({
+          error: "Recharge pack à valider avant publication.",
+          code: "PACK_UPGRADE_PENDING",
+          packUpgrade: packRequest
+        });
+      }
+
+      const organizationPack = String(existing.organization_passations_pack || "").toLowerCase();
+      const quota = Number(existing.organization_passations_quota || 0);
+      const used = Number(existing.organization_passations_used || 0);
+      const remaining = organizationPack === "illimite" ? Infinity : Math.max(0, quota - used);
+
+      if (!existing.organization_id) {
+        return res.status(400).json({ error: "Aucun cockpit client n’est rattaché à ce projet." });
+      }
+
+      if (organizationPack !== "illimite" && remaining <= 0) {
+        return res.status(409).json({
+          error: "Pack épuisé : validez une recharge ou modifiez le quota avant publication.",
+          code: "NO_PASSATIONS_REMAINING",
+          passationsRemaining: 0
+        });
+      }
     }
 
     const nextShareUrl = (finalStatus === "published" || finalStatus === "unpublished")
