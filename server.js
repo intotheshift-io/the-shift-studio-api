@@ -997,7 +997,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-status-archive-cleanup-v7",
+    version: "server-archive-restore-admin-draft-v8",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
     hasNoRecreateDeletedProjectGuard: true,
@@ -1751,26 +1751,77 @@ app.patch("/api/projects/:id/restore", auth, async (req, res) => {
     return res.status(400).json({ error: "ID projet invalide." });
   }
 
+  if (!req.user || req.user.role !== "admin") {
+    return res.status(403).json({ error: "La restauration d’une archive est réservée à l’équipe Into The Shift." });
+  }
+
   try {
-    const result = await pool.query(
-      `UPDATE projects
-       SET status = 'unpublished',
-           archived_at = NULL,
-           updated_at = NOW()
-       WHERE id = $1
-         AND (
-           user_id = $2
-           OR created_by = $2
-           OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $2)
-           OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
-         )
-       RETURNING *`,
-      [numericId, req.user.id]
+    const sourceResult = await pool.query(
+      `SELECT * FROM projects WHERE id = $1 LIMIT 1`,
+      [numericId]
     );
 
-    if (!result.rows[0]) {
+    const source = sourceResult.rows[0];
+    if (!source) {
       return res.status(404).json({ error: "Projet introuvable" });
     }
+
+    const sourceData = source.data && typeof source.data === "object" ? source.data : {};
+    const restoredData = {
+      ...sourceData,
+      restoredFromArchive: true,
+      restoredFromArchiveAt: new Date().toISOString(),
+      status: "draft",
+      current_step: "questions",
+      currentStep: "questions",
+      step: "questions",
+      configTransmise: false,
+      config_transmise: false,
+      submitted: false,
+      submitted_at: null,
+      shareUrl: "",
+      share_url: "",
+      resultsUrl: "",
+      results_url: "",
+      campaignStartDate: "",
+      campaign_start_date: "",
+      campaignEndDate: "",
+      campaign_end_date: ""
+    };
+
+    if (restoredData.parametrage && typeof restoredData.parametrage === "object") {
+      restoredData.parametrage.date_lancement = "";
+      restoredData.parametrage.dateLancement = "";
+      restoredData.parametrage.date_cloture = "";
+      restoredData.parametrage.dateCloture = "";
+    }
+
+    const baseTitle = String(source.title || "Autodiagnostic").trim();
+    const restoredTitle = /^Restauré\s+-\s+/i.test(baseTitle) ? baseTitle : `Restauré - ${baseTitle}`;
+    restoredData.title = restoredTitle;
+    restoredData.autodiagTitle = restoredTitle;
+    if (restoredData.parametrage && typeof restoredData.parametrage === "object") {
+      restoredData.parametrage.nom = restoredTitle;
+    }
+
+    const result = await pool.query(
+      `UPDATE projects
+       SET title = $1,
+           status = 'draft',
+           data = $2,
+           current_step = 'questions',
+           share_url = NULL,
+           results_url = NULL,
+           campaign_start_date = NULL,
+           campaign_end_date = NULL,
+           unpublished_at = NULL,
+           archived_at = NULL,
+           published_at = NULL,
+           updated_at = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [restoredTitle, restoredData, numericId]
+    );
 
     res.json({ ok: true, project: result.rows[0] });
   } catch (err) {
@@ -2734,7 +2785,6 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
     const result = await pool.query(
       `UPDATE projects
        SET status = $1,
-           data = jsonb_set(COALESCE(data, '{}'::jsonb), '{status}', to_jsonb($1::text), true),
            unpublished_at = CASE WHEN $1 = 'unpublished' THEN COALESCE(unpublished_at, NOW()) ELSE unpublished_at END,
            archived_at = CASE WHEN $1 = 'archived' THEN COALESCE(archived_at, NOW()) ELSE NULL END,
            published_at = CASE WHEN $1 = 'published' THEN COALESCE(published_at, NOW()) ELSE published_at END,
@@ -2832,7 +2882,6 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
       UPDATE projects
       SET
         status = $1,
-        data = jsonb_set(COALESCE(data, '{}'::jsonb), '{status}', to_jsonb($1::text), true),
         share_url = $2,
         results_url = $3,
         campaign_start_date = COALESCE($4, campaign_start_date),
