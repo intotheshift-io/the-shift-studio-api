@@ -3389,6 +3389,55 @@ Pour toute correction ou précision, contactez contact@intotheshift.io.
 L’équipe Into The Shift`;
 }
 
+function extractProjectIdFromTransmissionBody(body = {}) {
+  return (
+    body.projectId ||
+    body.project_id ||
+    body.currentProjectId ||
+    body.current_project_id ||
+    body.currentAdId ||
+    body.current_ad_id ||
+    body.data?.projectId ||
+    body.data?.project_id ||
+    body.data?.currentAdId ||
+    body.state?.projectId ||
+    body.state?.project_id ||
+    body.payload?.projectId ||
+    body.payload?.project_id ||
+    null
+  );
+}
+
+async function markProjectAsSentFromTransmission(req) {
+  const projectId = extractProjectIdFromTransmissionBody(req.body || {});
+  if (!projectId) return null;
+
+  const result = await pool.query(
+    `UPDATE projects
+     SET status = 'sent',
+         data = COALESCE(data, '{}'::jsonb) || jsonb_build_object(
+           'configTransmise', true,
+           'config_transmise', true,
+           'submitted', true,
+           'submitted_at', NOW(),
+           'status', 'sent'
+         ),
+         current_step = 'validation',
+         updated_at = NOW()
+     WHERE id = $1
+       AND (
+         user_id = $2
+         OR created_by = $2
+         OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $2)
+         OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
+       )
+     RETURNING id, status`,
+    [projectId, req.user.id]
+  );
+
+  return result.rows[0] || null;
+}
+
 app.post("/api/transmissions/submit", auth, async (req, res) => {
   try {
     const ctx = buildTransmissionEmailContext(req.body || {});
@@ -3482,6 +3531,8 @@ Le fichier Excel de configuration est joint à cet email.`,
       recapFilename: ctx.recapFilename
     });
 
+    const projectStatusUpdate = await markProjectAsSentFromTransmission(req);
+
     return res.json({
       ok: clientMail.sent && adminMail.sent,
       clientEmailSent: clientMail.sent,
@@ -3489,7 +3540,9 @@ Le fichier Excel de configuration est joint à cet email.`,
       adminEmailSent: adminMail.sent,
       adminEmailStatus: adminMail.reason || "SENT",
       excelFilename: ctx.excelFilename,
-      recapFilename: ctx.recapFilename
+      recapFilename: ctx.recapFilename,
+      projectStatusUpdated: Boolean(projectStatusUpdate),
+      projectStatus: projectStatusUpdate?.status || null
     });
   } catch (err) {
     console.error("Erreur /api/transmissions/submit", err);
