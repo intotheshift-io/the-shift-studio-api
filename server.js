@@ -1169,7 +1169,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-pack-upgrade-validation-v9",
+    version: "server-pack-upgrade-validation-v10-for-update-of-p",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
     hasNoRecreateDeletedProjectGuard: true,
@@ -2953,7 +2953,7 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
        FROM projects p
        LEFT JOIN organizations o ON o.id = p.organization_id
        WHERE p.id = $1
-       FOR UPDATE`,
+       FOR UPDATE OF p`,
       [id]
     );
 
