@@ -2988,7 +2988,7 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
              updated_at = NOW()
          WHERE id = $2
          RETURNING *`,
-        [rejectedData, id]
+        [JSON.stringify(rejectedData), id]
       );
 
       await client.query("COMMIT");
@@ -3044,7 +3044,7 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
            updated_at = NOW()
        WHERE id = $2
        RETURNING *`,
-      [approvedData, id]
+      [JSON.stringify(approvedData), id]
     );
 
     await client.query("COMMIT");
@@ -3058,7 +3058,7 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("PATCH /api/admin/projects/:id/pack-upgrade", err);
-    res.status(500).json({ error: "Erreur validation recharge pack." });
+    res.status(500).json({ error: "Erreur validation recharge pack.", detail: err.message || "" });
   } finally {
     client.release();
   }
