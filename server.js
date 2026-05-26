@@ -1193,6 +1193,7 @@ app.get("/debug-version", (req, res) => {
     hasBackendTransmissionSubmit: true,
     hasUserStatusLifecycle: true,
     hasAdminUserProfileFields: true,
+    hasAdminUserOrganizationTransfer: true,
     hasPackUpgradeValidation: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
@@ -2658,23 +2659,86 @@ L’équipe Into The Shift`,
 
 app.patch("/api/admin/users/:id/organization", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
-  const { organizationId, role } = req.body;
+  const { organizationId, role, transferProjects } = req.body;
+  const userId = Number(id);
+  const orgId = Number(organizationId);
 
-  if (!organizationId) return res.status(400).json({ error: "Organisation requise" });
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(400).json({ error: "ID utilisateur invalide" });
+  }
+
+  if (!Number.isInteger(orgId) || orgId <= 0) {
+    return res.status(400).json({ error: "Organisation requise" });
+  }
+
+  const client = await pool.connect();
 
   try {
-    const userResult = await pool.query(`SELECT * FROM users WHERE id = $1 LIMIT 1`, [id]);
-    if (!userResult.rows[0]) return res.status(404).json({ error: "Utilisateur introuvable" });
+    await client.query("BEGIN");
 
-    const orgResult = await pool.query(`SELECT * FROM organizations WHERE id = $1 LIMIT 1`, [organizationId]);
-    if (!orgResult.rows[0]) return res.status(404).json({ error: "Organisation introuvable" });
+    const userResult = await client.query(`SELECT * FROM users WHERE id = $1 LIMIT 1`, [userId]);
+    const user = userResult.rows[0];
+    if (!user) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Utilisateur introuvable" });
+    }
 
-    await addUserToOrganization({ organizationId, userId: id, role: role || "member" });
+    if (String(user.role || "client").toLowerCase() !== "client") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Seuls les comptes clients peuvent être rattachés à un cockpit client." });
+    }
 
-    res.json({ ok: true });
+    const orgResult = await client.query(`SELECT * FROM organizations WHERE id = $1 LIMIT 1`, [orgId]);
+    const org = orgResult.rows[0];
+    if (!org) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Organisation introuvable" });
+    }
+
+    if (String(org.type || "client").toLowerCase() !== "client") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Le rattachement doit cibler un cockpit client." });
+    }
+
+    await client.query(
+      `DELETE FROM organization_users
+       WHERE user_id = $1
+         AND organization_id <> $2`,
+      [userId, orgId]
+    );
+
+    await client.query(
+      `INSERT INTO organization_users (organization_id, user_id, role)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (organization_id, user_id)
+       DO UPDATE SET role = EXCLUDED.role`,
+      [orgId, userId, role || "member"]
+    );
+
+    let transferredProjects = 0;
+
+    if (transferProjects === true) {
+      const moved = await client.query(
+        `UPDATE projects
+         SET organization_id = $1,
+             updated_at = NOW()
+         WHERE user_id = $2
+            OR created_by = $2
+         RETURNING id`,
+        [orgId, userId]
+      );
+      transferredProjects = moved.rowCount || 0;
+    }
+
+    await client.query("COMMIT");
+
+    res.json({ ok: true, organizationId: orgId, userId, transferredProjects });
   } catch (err) {
+    await client.query("ROLLBACK");
     console.error("PATCH /api/admin/users/:id/organization", err);
     res.status(500).json({ error: "Erreur rattachement utilisateur" });
+  } finally {
+    client.release();
   }
 });
 
