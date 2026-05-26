@@ -762,6 +762,82 @@ function applyPackUpgradeMetadata(data = {}, request = {}, status = "pending") {
   };
 }
 
+
+function sanitizeProjectDataForList(data = {}) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+
+  const clone = { ...data };
+  const heavyKeys = [
+    "passationLogoDataUrl",
+    "passation_logo_data_url",
+    "projectLogoDataUrl",
+    "project_logo_data_url",
+    "organizationLogoDataUrl",
+    "organization_logo_data_url"
+  ];
+
+  for (const key of heavyKeys) {
+    if (clone[key]) {
+      clone[`${key}Present`] = true;
+      clone[key] = "";
+    }
+  }
+
+  if (clone.parametrage && typeof clone.parametrage === "object") {
+    clone.parametrage = { ...clone.parametrage };
+    for (const key of heavyKeys) {
+      if (clone.parametrage[key]) {
+        clone.parametrage[`${key}Present`] = true;
+        clone.parametrage[key] = "";
+      }
+    }
+  }
+
+  if (clone.campagne && typeof clone.campagne === "object") {
+    clone.campagne = { ...clone.campagne };
+    for (const key of heavyKeys) {
+      if (clone.campagne[key]) {
+        clone.campagne[`${key}Present`] = true;
+        clone.campagne[key] = "";
+      }
+    }
+  }
+
+  if (clone.campaign && typeof clone.campaign === "object") {
+    clone.campaign = { ...clone.campaign };
+    for (const key of heavyKeys) {
+      if (clone.campaign[key]) {
+        clone.campaign[`${key}Present`] = true;
+        clone.campaign[key] = "";
+      }
+    }
+  }
+
+  return clone;
+}
+
+function sanitizeProjectForList(project = {}) {
+  const data = sanitizeProjectDataForList(project.data || {});
+  return {
+    ...project,
+    data,
+    passationLogoDataUrl: "",
+    passation_logo_data_url: "",
+    hasPassationLogoData: Boolean(
+      project.passationLogoDataUrl ||
+      project.passation_logo_data_url ||
+      data.passationLogoDataUrlPresent ||
+      data.passation_logo_data_urlPresent ||
+      data.parametrage?.passationLogoDataUrlPresent ||
+      data.parametrage?.passation_logo_data_urlPresent
+    )
+  };
+}
+
+function sanitizeProjectsForList(projects = []) {
+  return Array.isArray(projects) ? projects.map(sanitizeProjectForList) : [];
+}
+
 function formatDateLongFr(value) {
   if (!value) return "—";
   const d = new Date(value);
@@ -2855,7 +2931,8 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
 
   res.json({
     projects: result.rows.map((row) => {
-      const data = row.data || {};
+      const rawData = row.data || {};
+      const data = sanitizeProjectDataForList(rawData);
 
       return {
         id: row.id,
@@ -2903,9 +2980,10 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
         campaign_start_date: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
         campaign_end_date: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
         passationLogoName: row.passation_logo_name || data.passationLogoName || data.passation_logo_name || data.parametrage?.passationLogoName || data.parametrage?.passation_logo_name || "",
-        passationLogoDataUrl: row.passation_logo_data_url || data.passationLogoDataUrl || data.passation_logo_data_url || data.parametrage?.passationLogoDataUrl || data.parametrage?.passation_logo_data_url || "",
+        passationLogoDataUrl: "",
         passation_logo_name: row.passation_logo_name || data.passation_logo_name || data.parametrage?.passation_logo_name || "",
-        passation_logo_data_url: row.passation_logo_data_url || data.passation_logo_data_url || data.parametrage?.passation_logo_data_url || "",
+        passation_logo_data_url: "",
+        hasPassationLogoData: Boolean(row.passation_logo_data_url || rawData.passationLogoDataUrl || rawData.passation_logo_data_url || rawData.parametrage?.passationLogoDataUrl || rawData.parametrage?.passation_logo_data_url),
         clientName:
           row.organization_name ||
           row.company_name ||
@@ -2991,9 +3069,10 @@ app.get("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
         campaign_start_date: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
         campaign_end_date: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
         passationLogoName: row.passation_logo_name || data.passationLogoName || data.passation_logo_name || data.parametrage?.passationLogoName || data.parametrage?.passation_logo_name || "",
-        passationLogoDataUrl: row.passation_logo_data_url || data.passationLogoDataUrl || data.passation_logo_data_url || data.parametrage?.passationLogoDataUrl || data.parametrage?.passation_logo_data_url || "",
+        passationLogoDataUrl: "",
         passation_logo_name: row.passation_logo_name || data.passation_logo_name || data.parametrage?.passation_logo_name || "",
-        passation_logo_data_url: row.passation_logo_data_url || data.passation_logo_data_url || data.parametrage?.passation_logo_data_url || "",
+        passation_logo_data_url: "",
+        hasPassationLogoData: Boolean(row.passation_logo_data_url || rawData.passationLogoDataUrl || rawData.passation_logo_data_url || rawData.parametrage?.passationLogoDataUrl || rawData.parametrage?.passation_logo_data_url),
         creatorEmail: row.creator_email || row.email || "",
         creatorCompanyName: row.creator_company_name || row.company_name || "",
         creatorRole: row.creator_role || "",
