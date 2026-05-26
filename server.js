@@ -1195,7 +1195,6 @@ app.get("/debug-version", (req, res) => {
     hasUserStatusLifecycle: true,
     hasAdminUserProfileFields: true,
     hasAdminUserOrganizationTransfer: true,
-    hasAdminOrganizationDelete: true,
     hasPackUpgradeValidation: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
@@ -2641,92 +2640,6 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
   } catch (err) {
     console.error("Erreur mise à jour passations organisation", err);
     res.status(500).json({ error: "Erreur mise à jour passations client final" });
-  }
-});
-
-app.delete("/api/admin/organizations/:id", auth, requireAdmin, async (req, res) => {
-  const { id } = req.params;
-  const organizationId = Number(id);
-
-  if (!Number.isInteger(organizationId) || organizationId <= 0) {
-    return res.status(400).json({ error: "ID organisation invalide" });
-  }
-
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-
-    const orgResult = await client.query(
-      `SELECT *
-       FROM organizations
-       WHERE id = $1
-       LIMIT 1
-       FOR UPDATE`,
-      [organizationId]
-    );
-
-    const organization = orgResult.rows[0];
-
-    if (!organization) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Organisation introuvable" });
-    }
-
-    if (String(organization.type || "client").toLowerCase() !== "client") {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Seuls les cockpits clients peuvent être supprimés depuis cette interface." });
-    }
-
-    const projectsResult = await client.query(
-      `SELECT COUNT(*)::int AS count
-       FROM projects
-       WHERE organization_id = $1`,
-      [organizationId]
-    );
-
-    const usersResult = await client.query(
-      `SELECT COUNT(*)::int AS count
-       FROM organization_users
-       WHERE organization_id = $1`,
-      [organizationId]
-    );
-
-    const projectsCount = Number(projectsResult.rows[0]?.count || 0);
-    const usersCount = Number(usersResult.rows[0]?.count || 0);
-
-    if (projectsCount > 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: "Impossible de supprimer ce cockpit : des autodiagnostics y sont encore rattachés."
-      });
-    }
-
-    if (usersCount > 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: "Impossible de supprimer ce cockpit : des utilisateurs y sont encore rattachés."
-      });
-    }
-
-    await client.query(
-      `DELETE FROM organizations
-       WHERE id = $1`,
-      [organizationId]
-    );
-
-    await client.query("COMMIT");
-
-    return res.json({
-      ok: true,
-      deletedOrganizationId: organizationId
-    });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("DELETE /api/admin/organizations/:id", err);
-    return res.status(500).json({ error: "Erreur suppression organisation" });
-  } finally {
-    client.release();
   }
 });
 
