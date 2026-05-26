@@ -1190,7 +1190,6 @@ app.get("/debug-version", (req, res) => {
     hasProjectCurrentStep: true,
     hasProjectCloneRoute: true,
     hasOrganizationUsers: true,
-    hasAdminOrganizationUsersRoute: true,
     hasBackendTransmissionSubmit: true,
     hasUserStatusLifecycle: true,
     hasAdminUserProfileFields: true,
@@ -2417,65 +2416,6 @@ app.get("/api/admin/organizations", auth, requireAdmin, async (req, res) => {
   } catch (err) {
     console.error("GET /api/admin/organizations", err);
     res.status(500).json({ error: "Erreur chargement clients finaux." });
-  }
-});
-
-app.get("/api/admin/organizations/:id/users", auth, requireAdmin, async (req, res) => {
-  const { id } = req.params;
-  const organizationId = Number(id);
-
-  if (!Number.isInteger(organizationId) || organizationId <= 0) {
-    return res.status(400).json({ error: "ID organisation invalide" });
-  }
-
-  try {
-    const orgResult = await pool.query(
-      `SELECT id
-       FROM organizations
-       WHERE id = $1
-       LIMIT 1`,
-      [organizationId]
-    );
-
-    if (!orgResult.rows[0]) {
-      return res.status(404).json({ error: "Organisation introuvable" });
-    }
-
-    const result = await pool.query(`
-      SELECT
-        u.id,
-        u.email,
-        u.first_name,
-        u.last_name,
-        u.company_name,
-        u.job_title,
-        u.role,
-        u.status,
-        ou.role AS organization_role,
-        ou.created_at
-      FROM organization_users ou
-      INNER JOIN users u ON u.id = ou.user_id
-      WHERE ou.organization_id = $1
-      ORDER BY u.first_name ASC, u.last_name ASC, u.email ASC
-    `, [organizationId]);
-
-    res.json({
-      users: result.rows.map((u) => ({
-        id: u.id,
-        email: u.email,
-        firstName: u.first_name || "",
-        lastName: u.last_name || "",
-        companyName: u.company_name || "",
-        jobTitle: u.job_title || "",
-        role: u.role || "client",
-        status: u.status || "active",
-        organizationRole: u.organization_role || "member",
-        createdAt: u.created_at || null
-      }))
-    });
-  } catch (err) {
-    console.error("GET /api/admin/organizations/:id/users", err);
-    res.status(500).json({ error: "Erreur chargement utilisateurs cockpit" });
   }
 });
 
