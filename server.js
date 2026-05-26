@@ -762,82 +762,6 @@ function applyPackUpgradeMetadata(data = {}, request = {}, status = "pending") {
   };
 }
 
-
-function sanitizeProjectDataForList(data = {}) {
-  if (!data || typeof data !== "object" || Array.isArray(data)) return {};
-
-  const clone = { ...data };
-  const heavyKeys = [
-    "passationLogoDataUrl",
-    "passation_logo_data_url",
-    "projectLogoDataUrl",
-    "project_logo_data_url",
-    "organizationLogoDataUrl",
-    "organization_logo_data_url"
-  ];
-
-  for (const key of heavyKeys) {
-    if (clone[key]) {
-      clone[`${key}Present`] = true;
-      clone[key] = "";
-    }
-  }
-
-  if (clone.parametrage && typeof clone.parametrage === "object") {
-    clone.parametrage = { ...clone.parametrage };
-    for (const key of heavyKeys) {
-      if (clone.parametrage[key]) {
-        clone.parametrage[`${key}Present`] = true;
-        clone.parametrage[key] = "";
-      }
-    }
-  }
-
-  if (clone.campagne && typeof clone.campagne === "object") {
-    clone.campagne = { ...clone.campagne };
-    for (const key of heavyKeys) {
-      if (clone.campagne[key]) {
-        clone.campagne[`${key}Present`] = true;
-        clone.campagne[key] = "";
-      }
-    }
-  }
-
-  if (clone.campaign && typeof clone.campaign === "object") {
-    clone.campaign = { ...clone.campaign };
-    for (const key of heavyKeys) {
-      if (clone.campaign[key]) {
-        clone.campaign[`${key}Present`] = true;
-        clone.campaign[key] = "";
-      }
-    }
-  }
-
-  return clone;
-}
-
-function sanitizeProjectForList(project = {}) {
-  const data = sanitizeProjectDataForList(project.data || {});
-  return {
-    ...project,
-    data,
-    passationLogoDataUrl: "",
-    passation_logo_data_url: "",
-    hasPassationLogoData: Boolean(
-      project.passationLogoDataUrl ||
-      project.passation_logo_data_url ||
-      data.passationLogoDataUrlPresent ||
-      data.passation_logo_data_urlPresent ||
-      data.parametrage?.passationLogoDataUrlPresent ||
-      data.parametrage?.passation_logo_data_urlPresent
-    )
-  };
-}
-
-function sanitizeProjectsForList(projects = []) {
-  return Array.isArray(projects) ? projects.map(sanitizeProjectForList) : [];
-}
-
 function formatDateLongFr(value) {
   if (!value) return "—";
   const d = new Date(value);
@@ -2373,9 +2297,9 @@ app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
       u.job_title,
       u.sector,
       u.organization_logo_name,
-      u.organization_logo_data_url,
+      NULL AS organization_logo_data_url,
       u.passation_logo_name,
-      u.passation_logo_data_url,
+      NULL AS passation_logo_data_url,
       u.role,
       u.status,
       u.must_change_password,
@@ -2879,144 +2803,148 @@ app.patch("/api/admin/users/:id/organization", auth, requireAdmin, async (req, r
 });
 
 app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
-  await autoUnpublishExpiredProjects();
-  const result = await pool.query(`
-    SELECT
-      p.id,
-      p.title,
-      p.status,
-      p.data,
-      p.trial_ends_at,
-      p.created_at,
-      p.updated_at,
-      p.organization_id,
-      p.current_step,
-      p.share_url,
-      p.results_url,
-      p.published_at,
-      p.unpublished_at,
-      p.archived_at,
-      p.campaign_start_date,
-      p.campaign_end_date,
-      p.passation_logo_name,
-      p.passation_logo_data_url,
-      o.name AS organization_name,
-      o.passations_pack AS organization_passations_pack,
-      o.passations_quota AS organization_passations_quota,
-      o.passations_used AS organization_passations_used,
-      u.id AS user_id,
-      u.email,
-      u.first_name,
-      u.last_name,
-      u.company_name,
-      o.created_by AS organization_created_by,
-      creator.id AS creator_id,
-      creator.email AS creator_email,
-      creator.first_name AS creator_first_name,
-      creator.last_name AS creator_last_name,
-      creator.company_name AS creator_company_name,
-      creator.role AS creator_role,
-      partner.id AS partner_id,
-      partner.email AS partner_email,
-      partner.first_name AS partner_first_name,
-      partner.last_name AS partner_last_name,
-      partner.company_name AS partner_company_name
-    FROM projects p
-    LEFT JOIN users u ON u.id = p.user_id
-    LEFT JOIN organizations o ON o.id = p.organization_id
-    LEFT JOIN users creator ON creator.id = COALESCE(p.created_by, p.user_id)
-    LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
-    ORDER BY p.updated_at DESC
-  `);
+  try {
+    await autoUnpublishExpiredProjects();
 
-  res.json({
-    projects: result.rows.map((row) => {
-      const rawData = row.data || {};
-      const data = sanitizeProjectDataForList(rawData);
+    // Liste admin volontairement légère : ne jamais renvoyer p.data complet ni les logos base64.
+    // Les données complètes restent disponibles via GET /api/admin/projects/:id si besoin.
+    const result = await pool.query(`
+      SELECT
+        p.id,
+        p.title,
+        p.status,
+        p.trial_ends_at,
+        p.created_at,
+        p.updated_at,
+        p.organization_id,
+        p.current_step,
+        p.share_url,
+        p.results_url,
+        p.published_at,
+        p.unpublished_at,
+        p.archived_at,
+        p.campaign_start_date,
+        p.campaign_end_date,
+        p.passation_logo_name,
+        o.name AS organization_name,
+        o.passations_pack AS organization_passations_pack,
+        o.passations_quota AS organization_passations_quota,
+        o.passations_used AS organization_passations_used,
+        u.id AS user_id,
+        u.email,
+        u.first_name,
+        u.last_name,
+        u.company_name,
+        o.created_by AS organization_created_by,
+        creator.id AS creator_id,
+        creator.email AS creator_email,
+        creator.first_name AS creator_first_name,
+        creator.last_name AS creator_last_name,
+        creator.company_name AS creator_company_name,
+        creator.role AS creator_role,
+        partner.id AS partner_id,
+        partner.email AS partner_email,
+        partner.first_name AS partner_first_name,
+        partner.last_name AS partner_last_name,
+        partner.company_name AS partner_company_name,
+        COALESCE(
+          NULLIF(p.data->'parametrage'->>'titre_repondants', ''),
+          NULLIF(p.data->'parametrage'->>'titreRespondants', ''),
+          NULLIF(p.data->'parametrage'->>'titre_visible_repondants', ''),
+          NULLIF(p.data->'parametrage'->>'titreVisibleRepondants', ''),
+          NULLIF(p.data->'parametrage'->>'titre_visible', ''),
+          NULLIF(p.data->'parametrage'->>'titreVisible', ''),
+          NULLIF(p.data->'parametrage'->>'titre', ''),
+          NULLIF(p.data->>'titre_repondants', ''),
+          NULLIF(p.data->>'titreRespondants', ''),
+          NULLIF(p.data->>'autodiagTitle', ''),
+          NULLIF(p.data->>'title', ''),
+          p.title
+        ) AS display_title,
+        COALESCE(
+          NULLIF(p.data->'parametrage'->>'pack_choisi', ''),
+          NULLIF(p.data->'parametrage'->>'packChoisi', ''),
+          NULLIF(p.data->'parametrage'->>'selectedPack', ''),
+          NULLIF(p.data->>'pack_choisi', ''),
+          NULLIF(p.data->>'packChoisi', ''),
+          NULLIF(p.data->>'selectedPack', ''),
+          NULLIF(p.data->>'passationsPack', '')
+        ) AS data_pack,
+        COALESCE((p.data->>'configTransmise')::boolean, false) AS data_config_transmise,
+        COALESCE((p.data->>'config_transmise')::boolean, false) AS data_config_transmise_snake,
+        COALESCE((p.data->>'submitted')::boolean, false) AS data_submitted,
+        COALESCE(NULLIF(p.data->>'step', ''), NULLIF(p.data->>'current_step', ''), NULLIF(p.data->>'currentStep', '')) AS data_current_step
+      FROM projects p
+      LEFT JOIN users u ON u.id = p.user_id
+      LEFT JOIN organizations o ON o.id = p.organization_id
+      LEFT JOIN users creator ON creator.id = COALESCE(p.created_by, p.user_id)
+      LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+      ORDER BY p.updated_at DESC
+      LIMIT 500
+    `);
 
-      return {
+    res.json({
+      projects: result.rows.map((row) => ({
         id: row.id,
-        title: extractProjectDisplayTitle(data, row.title || ""),
-        status: row.status || data.status || "brouillon",
-        pack:
-          row.organization_passations_pack ||
-          data.pack ||
-          data.packChoisi ||
-          data.selectedPack ||
-          data.passationsPack ||
-          "—",
-        configTransmise:
-          data.configTransmise ||
-          data.config_transmise ||
-          data.submitted ||
-          false,
-        data,
+        title: cleanProjectDisplayTitle(row.display_title || row.title || '') || 'Projet sans titre',
+        displayTitle: cleanProjectDisplayTitle(row.display_title || row.title || '') || 'Projet sans titre',
+        status: row.status || 'draft',
+        pack: row.organization_passations_pack || row.data_pack || '—',
+        configTransmise: Boolean(row.data_config_transmise || row.data_config_transmise_snake || row.data_submitted),
+        data: {},
         organizationId: row.organization_id,
-        organizationName: row.organization_name || row.company_name || "",
-        organizationPassationsPack: row.organization_passations_pack || "",
+        organization_id: row.organization_id,
+        organizationName: row.organization_name || row.company_name || '',
+        organizationPassationsPack: row.organization_passations_pack || '',
         organizationPassationsQuota: Number(row.organization_passations_quota || 0),
         organizationPassationsUsed: Number(row.organization_passations_used || 0),
-        organizationPassationsRemaining: Math.max(
-          0,
-          Number(row.organization_passations_quota || 0) -
-          Number(row.organization_passations_used || 0)
-        ),
+        organizationPassationsRemaining: Math.max(0, Number(row.organization_passations_quota || 0) - Number(row.organization_passations_used || 0)),
         trialEndsAt: row.trial_ends_at,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
-        currentStep: row.current_step || data.step || data.current_step || data.currentStep || "",
-        shareUrl: row.share_url || "",
-        share_url: row.share_url || "",
-        resultsUrl: row.results_url || "",
-        results_url: row.results_url || "",
+        currentStep: row.current_step || row.data_current_step || '',
+        current_step: row.current_step || row.data_current_step || '',
+        shareUrl: row.share_url || '',
+        share_url: row.share_url || '',
+        resultsUrl: row.results_url || '',
+        results_url: row.results_url || '',
         publishedAt: row.published_at || null,
         published_at: row.published_at || null,
         unpublishedAt: row.unpublished_at || null,
         unpublished_at: row.unpublished_at || null,
         archivedAt: row.archived_at || null,
         archived_at: row.archived_at || null,
-        campaignStartDate: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
-        campaignEndDate: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
-        campaign_start_date: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
-        campaign_end_date: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
-        passationLogoName: row.passation_logo_name || data.passationLogoName || data.passation_logo_name || data.parametrage?.passationLogoName || data.parametrage?.passation_logo_name || "",
-        passationLogoDataUrl: "",
-        passation_logo_name: row.passation_logo_name || data.passation_logo_name || data.parametrage?.passation_logo_name || "",
-        passation_logo_data_url: "",
-        hasPassationLogoData: Boolean(row.passation_logo_data_url || rawData.passationLogoDataUrl || rawData.passation_logo_data_url || rawData.parametrage?.passationLogoDataUrl || rawData.parametrage?.passation_logo_data_url),
-        clientName:
-          row.organization_name ||
-          row.company_name ||
-          `${row.first_name || ""} ${row.last_name || ""}`.trim() ||
-          row.email ||
-          "—",
-        clientEmail: row.email || "",
+        campaignStartDate: row.campaign_start_date || null,
+        campaignEndDate: row.campaign_end_date || null,
+        campaign_start_date: row.campaign_start_date || null,
+        campaign_end_date: row.campaign_end_date || null,
+        passationLogoName: row.passation_logo_name || '',
+        passationLogoDataUrl: '',
+        passation_logo_name: row.passation_logo_name || '',
+        passation_logo_data_url: '',
+        clientName: row.organization_name || row.company_name || `${row.first_name || ''} ${row.last_name || ''}`.trim() || row.email || '—',
+        clientEmail: row.email || '',
         creatorId: row.creator_id || row.user_id || null,
-        creatorEmail: row.creator_email || row.email || "",
-        creatorName:
-          `${row.creator_first_name || ""} ${row.creator_last_name || ""}`.trim() ||
-          row.creator_company_name ||
-          row.creator_email ||
-          "—",
-        creatorCompanyName: row.creator_company_name || row.company_name || "",
-        creatorRole: row.creator_role || "",
+        creatorEmail: row.creator_email || row.email || '',
+        creatorName: `${row.creator_first_name || ''} ${row.creator_last_name || ''}`.trim() || row.creator_company_name || row.creator_email || '—',
+        creatorCompanyName: row.creator_company_name || row.company_name || '',
+        creatorRole: row.creator_role || '',
         partnerId: row.partner_id || null,
-        partnerEmail: row.partner_email || "",
-        partnerName:
-          row.partner_company_name ||
-          `${row.partner_first_name || ""} ${row.partner_last_name || ""}`.trim() ||
-          row.partner_email ||
-          "",
+        partnerEmail: row.partner_email || '',
+        partnerName: row.partner_company_name || `${row.partner_first_name || ''} ${row.partner_last_name || ''}`.trim() || row.partner_email || '',
         client: {
           id: row.user_id,
           email: row.email,
-          firstName: row.first_name || "",
-          lastName: row.last_name || "",
-          companyName: row.company_name || ""
+          firstName: row.first_name || '',
+          lastName: row.last_name || '',
+          companyName: row.company_name || ''
         }
-      };
-    })
-  });
+      }))
+    });
+  } catch (err) {
+    console.error('GET /api/admin/projects', err);
+    res.status(500).json({ error: 'Erreur chargement projets admin', detail: err.message || '' });
+  }
 });
 
 app.get("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
@@ -3069,10 +2997,9 @@ app.get("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
         campaign_start_date: row.campaign_start_date || extractCampaignStartDate(data, {}) || null,
         campaign_end_date: row.campaign_end_date || extractCampaignEndDate(data, {}) || null,
         passationLogoName: row.passation_logo_name || data.passationLogoName || data.passation_logo_name || data.parametrage?.passationLogoName || data.parametrage?.passation_logo_name || "",
-        passationLogoDataUrl: "",
+        passationLogoDataUrl: row.passation_logo_data_url || data.passationLogoDataUrl || data.passation_logo_data_url || data.parametrage?.passationLogoDataUrl || data.parametrage?.passation_logo_data_url || "",
         passation_logo_name: row.passation_logo_name || data.passation_logo_name || data.parametrage?.passation_logo_name || "",
-        passation_logo_data_url: "",
-        hasPassationLogoData: Boolean(row.passation_logo_data_url || rawData.passationLogoDataUrl || rawData.passation_logo_data_url || rawData.parametrage?.passationLogoDataUrl || rawData.parametrage?.passation_logo_data_url),
+        passation_logo_data_url: row.passation_logo_data_url || data.passation_logo_data_url || data.parametrage?.passation_logo_data_url || "",
         creatorEmail: row.creator_email || row.email || "",
         creatorCompanyName: row.creator_company_name || row.company_name || "",
         creatorRole: row.creator_role || "",
