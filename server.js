@@ -821,7 +821,7 @@ Accès à la campagne
 - Lien résultats : ${row.results_url}
 - Espace campagne et QR code : ${campaignUrl}
 
-Vous pouvez dès maintenant partager le lien aux répondants, utiliser le QR code de campagne et suivre les résultats au fil des réponses.
+Le lien de passation sera activable à partir de la date de lancement prévue. Vous pouvez dès maintenant préparer vos supports de communication, copier le QR code de campagne et conserver le lien résultats pour le suivi une fois la campagne ouverte.
 
 Si vous souhaitez modifier votre campagne après publication, contactez-nous à contact@intotheshift.io.
 
@@ -848,7 +848,7 @@ L’équipe Into The Shift`,
     <p><strong>Lien de passation :</strong><br><a href="${escapeHtml(row.share_url)}" style="color:#007883">${escapeHtml(row.share_url)}</a></p>
     <p><strong>Lien résultats :</strong><br><a href="${escapeHtml(row.results_url)}" style="color:#007883">${escapeHtml(row.results_url)}</a></p>
 
-    <p>Vous pouvez dès maintenant partager le lien aux répondants, utiliser le QR code de campagne et suivre les résultats au fil des réponses.</p>
+    <p>Le lien de passation sera activable à partir de la date de lancement prévue. Vous pouvez dès maintenant préparer vos supports de communication, copier le QR code de campagne et conserver le lien résultats pour le suivi une fois la campagne ouverte.</p>
     <p>Si vous souhaitez modifier votre campagne après publication, contactez-nous à <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p>
     <p>L’équipe Into The Shift</p>
   </div>
