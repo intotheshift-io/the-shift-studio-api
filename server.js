@@ -1986,34 +1986,73 @@ app.post("/api/projects/:id/clone", auth, async (req, res) => {
       return res.status(400).json({ error: "Le clonage est disponible après transmission, publication, dépublication ou archivage." });
     }
 
-    const clonedData = { ...(source.data || {}) };
-    clonedData.clonedFromProjectId = source.id;
-    clonedData.configTransmise = false;
-    clonedData.config_transmise = false;
-    clonedData.submitted = false;
-    clonedData.submitted_at = null;
-    clonedData.status = "draft";
-    clonedData.step = "questions";
-    clonedData.current_step = "questions";
-    clonedData.shareUrl = "";
-    clonedData.share_url = "";
-    clonedData.resultsUrl = "";
-    clonedData.results_url = "";
-    clonedData.campaignStartDate = "";
-    clonedData.campaign_start_date = "";
-    clonedData.campaignEndDate = "";
-    clonedData.campaign_end_date = "";
-    if (clonedData.parametrage && typeof clonedData.parametrage === "object") {
-      clonedData.parametrage.date_lancement = "";
-      clonedData.parametrage.dateLancement = "";
-      clonedData.parametrage.date_cloture = "";
-      clonedData.parametrage.dateCloture = "";
+    const clonedData = JSON.parse(JSON.stringify(source.data || {}));
+
+    function resetClonedProjectState(target) {
+      if (!target || typeof target !== "object") return;
+
+      target.isCopy = true;
+      target.is_copy = true;
+      target.clonedFromProjectId = source.id;
+      target.cloned_from_project_id = source.id;
+      target.copiedFromProjectId = source.id;
+      target.copied_from_project_id = source.id;
+      target.configTransmise = false;
+      target.config_transmise = false;
+      target.submitted = false;
+      target.submitted_at = null;
+      target.status = "draft";
+      target.step = "questions";
+      target.current_step = "questions";
+      target.currentStep = "questions";
+      target.shareUrl = "";
+      target.share_url = "";
+      target.resultsUrl = "";
+      target.results_url = "";
+      target.campaignStartDate = "";
+      target.campaign_start_date = "";
+      target.campaignEndDate = "";
+      target.campaign_end_date = "";
+      target.publishedAt = null;
+      target.published_at = null;
+      target.unpublishedAt = null;
+      target.unpublished_at = null;
+      target.archivedAt = null;
+      target.archived_at = null;
+
+      if (target.transmission && typeof target.transmission === "object") {
+        target.transmission = {
+          ...target.transmission,
+          status: "draft",
+          submitted_at: null,
+          sent_at: null
+        };
+      }
+
+      if (target.parametrage && typeof target.parametrage === "object") {
+        target.parametrage.date_lancement = "";
+        target.parametrage.dateLancement = "";
+        target.parametrage.date_cloture = "";
+        target.parametrage.dateCloture = "";
+      }
     }
 
-    const sourceTitle = extractProjectDisplayTitle(clonedData, source.title || "");
+    resetClonedProjectState(clonedData);
+    resetClonedProjectState(clonedData.state);
+    resetClonedProjectState(clonedData.payload);
+
+    const sourceTitle = extractProjectDisplayTitle(source.data || {}, source.title || "");
     const clonedTitle = `Copie de ${sourceTitle}`;
     clonedData.title = clonedTitle;
     clonedData.autodiagTitle = clonedTitle;
+    if (clonedData.state && typeof clonedData.state === "object") {
+      clonedData.state.title = clonedTitle;
+      clonedData.state.autodiagTitle = clonedTitle;
+    }
+    if (clonedData.payload && typeof clonedData.payload === "object") {
+      clonedData.payload.title = clonedTitle;
+      clonedData.payload.autodiagTitle = clonedTitle;
+    }
 
     const result = await pool.query(
       `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step, passation_logo_name, passation_logo_data_url)
