@@ -370,6 +370,12 @@ async function initDb() {
     ADD COLUMN IF NOT EXISTS unpublished_alert_sent_at TIMESTAMP;
   `);
 
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS publication_email_sent_at TIMESTAMP;
+  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS campaigns (
       id SERIAL PRIMARY KEY,
@@ -767,6 +773,144 @@ function formatDateLongFr(value) {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return String(value);
   return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" });
+}
+
+
+function getPublicationRecipient(row) {
+  const clientEmail = row.contact_email || row.user_email || "";
+  const clientName =
+    row.contact_name ||
+    row.user_company_name ||
+    `${row.user_first_name || ""} ${row.user_last_name || ""}`.trim() ||
+    "";
+
+  return {
+    to: clientEmail,
+    cc: row.partner_email || "",
+    name: clientName,
+    companyName: row.organization_name || row.user_company_name || "—"
+  };
+}
+
+function buildPublicationEmail({ row, recipient }) {
+  const title = extractProjectDisplayTitle(row.data || {}, row.title || "votre autodiagnostic");
+  const startDate = formatDateLongFr(row.campaign_start_date);
+  const endDate = formatDateLongFr(row.campaign_end_date);
+  const passationsLabel = row.organization_passations_pack === "illimite"
+    ? "Illimité"
+    : (row.organization_passations_quota ? `${Number(row.organization_passations_quota).toLocaleString("fr-FR")} passations achetées` : "—");
+  const hello = recipient.name || "";
+  const campaignUrl = `${FRONTEND_URL}/campagne.html?projectId=${encodeURIComponent(row.id)}`;
+
+  return {
+    subject: `Votre autodiagnostic est maintenant publié — ${title}`,
+    text:
+`Bonjour ${hello},
+
+Votre autodiagnostic est maintenant publié sur Into The Shift et prêt à être diffusé auprès de vos collaborateurs.
+
+Récapitulatif
+- Autodiagnostic : ${title}
+- Entreprise : ${recipient.companyName}
+- Date de lancement : ${startDate}
+- Date de clôture : ${endDate}
+- Nombre de passations prévues : ${passationsLabel}
+
+Accès à la campagne
+- Lien de passation : ${row.share_url}
+- Lien résultats : ${row.results_url}
+- Espace campagne et QR code : ${campaignUrl}
+
+Vous pouvez dès maintenant partager le lien aux répondants, utiliser le QR code de campagne et suivre les résultats au fil des réponses.
+
+Si vous souhaitez modifier votre campagne après publication, contactez-nous à contact@intotheshift.io.
+
+L’équipe Into The Shift`,
+    html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
+    <p>Bonjour ${escapeHtml(hello)},</p>
+    <p>Votre autodiagnostic est maintenant publié sur <strong>Into The Shift</strong> et prêt à être diffusé auprès de vos collaborateurs.</p>
+
+    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
+      <div style="font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#60758a;font-weight:bold;margin-bottom:8px">Récapitulatif</div>
+      <p style="margin:0"><strong>Autodiagnostic :</strong> ${escapeHtml(title)}<br>
+      <strong>Entreprise :</strong> ${escapeHtml(recipient.companyName)}<br>
+      <strong>Date de lancement :</strong> ${escapeHtml(startDate)}<br>
+      <strong>Date de clôture :</strong> ${escapeHtml(endDate)}<br>
+      <strong>Nombre de passations prévues :</strong> ${escapeHtml(passationsLabel)}</p>
+    </div>
+
+    <p style="margin:22px 0 10px">
+      <a href="${escapeHtml(campaignUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder à ma campagne et au QR code</a>
+    </p>
+
+    <p><strong>Lien de passation :</strong><br><a href="${escapeHtml(row.share_url)}" style="color:#007883">${escapeHtml(row.share_url)}</a></p>
+    <p><strong>Lien résultats :</strong><br><a href="${escapeHtml(row.results_url)}" style="color:#007883">${escapeHtml(row.results_url)}</a></p>
+
+    <p>Vous pouvez dès maintenant partager le lien aux répondants, utiliser le QR code de campagne et suivre les résultats au fil des réponses.</p>
+    <p>Si vous souhaitez modifier votre campagne après publication, contactez-nous à <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p>
+    <p>L’équipe Into The Shift</p>
+  </div>
+</div>`
+  };
+}
+
+async function sendProjectPublicationEmail(projectId) {
+  const result = await pool.query(`
+    SELECT
+      p.id,
+      p.title,
+      p.data,
+      p.share_url,
+      p.results_url,
+      p.campaign_start_date,
+      p.campaign_end_date,
+      p.publication_email_sent_at,
+      o.name AS organization_name,
+      o.contact_email,
+      o.contact_name,
+      o.passations_pack AS organization_passations_pack,
+      o.passations_quota AS organization_passations_quota,
+      client.email AS user_email,
+      client.first_name AS user_first_name,
+      client.last_name AS user_last_name,
+      client.company_name AS user_company_name,
+      partner.email AS partner_email
+    FROM projects p
+    LEFT JOIN users client ON client.id = p.user_id
+    LEFT JOIN organizations o ON o.id = p.organization_id
+    LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+    WHERE p.id = $1
+    LIMIT 1
+  `, [projectId]);
+
+  const row = result.rows[0];
+  if (!row) return { sent: false, reason: "PROJECT_NOT_FOUND" };
+  if (row.publication_email_sent_at) return { sent: false, reason: "ALREADY_SENT" };
+  if (!row.share_url || !row.results_url) return { sent: false, reason: "MISSING_URLS" };
+
+  const recipient = getPublicationRecipient(row);
+  if (!recipient.to) return { sent: false, reason: "NO_RECIPIENT" };
+
+  const mail = buildPublicationEmail({ row, recipient });
+  const mailResult = await sendTransactionalEmail({
+    to: recipient.to,
+    cc: recipient.cc || undefined,
+    subject: mail.subject,
+    text: mail.text,
+    html: mail.html
+  });
+
+  if (mailResult.sent) {
+    await pool.query(`UPDATE projects SET publication_email_sent_at = NOW() WHERE id = $1`, [projectId]);
+  }
+
+  return {
+    ...mailResult,
+    to: recipient.to,
+    cc: recipient.cc || ""
+  };
 }
 
 async function autoUnpublishExpiredProjects() {
@@ -3305,6 +3449,7 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
          p.results_url,
          p.data,
          p.organization_id,
+         p.publication_email_sent_at,
          o.passations_pack AS organization_passations_pack,
          o.passations_quota AS organization_passations_quota,
          o.passations_used AS organization_passations_used
@@ -3397,7 +3542,12 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
       ]
     );
 
-    res.json({ ok: true, project: result.rows[0] });
+    let publicationEmail = { sent: false, reason: "NOT_TRIGGERED" };
+    if (finalStatus === "published" && currentStatus !== "published" && !existing.publication_email_sent_at) {
+      publicationEmail = await sendProjectPublicationEmail(id);
+    }
+
+    res.json({ ok: true, project: result.rows[0], publicationEmail });
   } catch (err) {
     console.error("Erreur publication projet", err);
     res.status(500).json({ error: "Erreur publication projet" });
