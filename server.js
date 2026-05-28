@@ -798,7 +798,7 @@ function buildPublicationEmail({ row, recipient }) {
   const endDate = formatDateLongFr(row.campaign_end_date);
   const passationsLabel = row.organization_passations_pack === "illimite"
     ? "Illimité"
-    : (row.organization_passations_quota ? `${Number(row.organization_passations_quota).toLocaleString("fr-FR")} passations achetées` : "—");
+    : `${Math.max(0, Number(row.organization_passations_quota || 0) - Number(row.organization_passations_used || 0)).toLocaleString("fr-FR")} passations restantes`;
   const hello = recipient.name || "";
   const campaignUrl = `${FRONTEND_URL}/campagne.html?projectId=${encodeURIComponent(row.id)}`;
 
@@ -814,7 +814,7 @@ Récapitulatif
 - Entreprise : ${recipient.companyName}
 - Date de lancement : ${startDate}
 - Date de clôture : ${endDate}
-- Nombre de passations prévues : ${passationsLabel}
+- Passations restantes : ${passationsLabel}
 
 Accès à la campagne
 - Lien de passation : ${row.share_url}
@@ -838,7 +838,7 @@ L’équipe Into The Shift`,
       <strong>Entreprise :</strong> ${escapeHtml(recipient.companyName)}<br>
       <strong>Date de lancement :</strong> ${escapeHtml(startDate)}<br>
       <strong>Date de clôture :</strong> ${escapeHtml(endDate)}<br>
-      <strong>Nombre de passations prévues :</strong> ${escapeHtml(passationsLabel)}</p>
+      <strong>Passations restantes :</strong> ${escapeHtml(passationsLabel)}</p>
     </div>
 
     <p style="margin:22px 0 10px">
@@ -872,6 +872,7 @@ async function sendProjectPublicationEmail(projectId) {
       o.contact_name,
       o.passations_pack AS organization_passations_pack,
       o.passations_quota AS organization_passations_quota,
+      o.passations_used AS organization_passations_used,
       client.email AS user_email,
       client.first_name AS user_first_name,
       client.last_name AS user_last_name,
