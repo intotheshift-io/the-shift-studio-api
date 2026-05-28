@@ -4274,10 +4274,11 @@ Le fichier Excel de configuration est joint à cet email.`,
       recapFilename: ctx.recapFilename
     });
 
-    const projectStatusUpdate = await markProjectAsSentFromTransmission(req);
+    const emailsOk = clientMail.sent && adminMail.sent;
+    const projectStatusUpdate = emailsOk ? await markProjectAsSentFromTransmission(req) : null;
 
-    return res.json({
-      ok: clientMail.sent && adminMail.sent,
+    const responsePayload = {
+      ok: emailsOk,
       clientEmailSent: clientMail.sent,
       clientEmailStatus: clientMail.reason || "SENT",
       adminEmailSent: adminMail.sent,
@@ -4286,7 +4287,16 @@ Le fichier Excel de configuration est joint à cet email.`,
       recapFilename: ctx.recapFilename,
       projectStatusUpdated: Boolean(projectStatusUpdate),
       projectStatus: projectStatusUpdate?.status || null
-    });
+    };
+
+    if (!emailsOk) {
+      return res.status(502).json({
+        ...responsePayload,
+        error: "Transmission email non confirmée"
+      });
+    }
+
+    return res.json(responsePayload);
   } catch (err) {
     console.error("Erreur /api/transmissions/submit", err);
     return res.status(500).json({
