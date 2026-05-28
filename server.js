@@ -443,54 +443,6 @@ function normalizeDateValue(value) {
   return d.toISOString().slice(0, 10);
 }
 
-function cleanOrganizationIdValue(value) {
-  const id = String(value || "").trim();
-  if (!id || id === "0" || id.toLowerCase() === "null" || id.toLowerCase() === "undefined") return null;
-  const n = Number(id);
-  if (!Number.isInteger(n) || n <= 0) return null;
-  return n;
-}
-
-function extractIncomingOrganizationId(data = {}, body = {}) {
-  const d = data && typeof data === "object" ? data : {};
-  const payload = d.payload && typeof d.payload === "object" ? d.payload : {};
-  const state = d.state && typeof d.state === "object" ? d.state : {};
-
-  return cleanOrganizationIdValue(
-    body.organizationId || body.organization_id || body.orgId || body.org_id || body.clientId || body.client_id ||
-    d.organizationId || d.organization_id || d.orgId || d.org_id || d.targetOrganizationId || d.target_organization_id || d.adminCreateForOrganizationId ||
-    state.organizationId || state.organization_id || state.orgId || state.org_id || state.targetOrganizationId || state.target_organization_id || state.adminCreateForOrganizationId ||
-    payload.organizationId || payload.organization_id || payload.orgId || payload.org_id || payload.targetOrganizationId || payload.target_organization_id || payload.adminCreateForOrganizationId
-  );
-}
-
-async function assertCanUseOrganization(req, organizationId) {
-  const orgId = cleanOrganizationIdValue(organizationId);
-  if (!orgId) return null;
-
-  const result = await pool.query(
-    `SELECT id, created_by
-     FROM organizations
-     WHERE id = $1
-       AND (
-         EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
-         OR created_by = $2
-         OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = organizations.id AND ou.user_id = $2)
-       )
-     LIMIT 1`,
-    [orgId, req.user.id]
-  );
-
-  if (!result.rows[0]) {
-    const exists = await pool.query(`SELECT id FROM organizations WHERE id = $1 LIMIT 1`, [orgId]);
-    const err = new Error(exists.rows[0] ? "Cockpit client non autorisé pour ce compte." : "Cockpit client introuvable.");
-    err.statusCode = exists.rows[0] ? 403 : 404;
-    throw err;
-  }
-
-  return orgId;
-}
-
 
 function isValidHttpsUrl(value) {
   const url = String(value || "").trim();
@@ -1788,7 +1740,7 @@ app.get("/api/projects", auth, async (req, res) => {
 });
 
 app.post("/api/projects", auth, async (req, res) => {
-  const { title, data, status, currentStep } = req.body;
+  const { title, data, organizationId, status, currentStep } = req.body;
   const projectId =
     req.body.projectId ||
     req.body.project_id ||
@@ -1817,29 +1769,9 @@ app.post("/api/projects", auth, async (req, res) => {
   const finalPassationLogoDataUrl = extractPassationLogoDataUrl(data || {}, req.body || {});
   const finalTitle = extractProjectDisplayTitle(data || {}, title || "");
 
-  const incomingOrganizationId = extractIncomingOrganizationId(data || {}, req.body || {});
-
-  let finalOrganizationId = incomingOrganizationId || null;
-
-  if (!finalOrganizationId) {
-    finalOrganizationId = await getUserPrimaryOrganizationId(req.user.id);
-  }
-
-  if (finalOrganizationId) {
-    try {
-      finalOrganizationId = await assertCanUseOrganization(req, finalOrganizationId);
-    } catch (err) {
-      return res.status(err.statusCode || 403).json({ error: err.message || "Cockpit client non autorisé." });
-    }
-  }
-
   const normalizedData = data && typeof data === "object"
     ? {
         ...data,
-        organizationId: finalOrganizationId || data.organizationId || data.organization_id || "",
-        organization_id: finalOrganizationId || data.organization_id || data.organizationId || "",
-        targetOrganizationId: finalOrganizationId || data.targetOrganizationId || data.target_organization_id || "",
-        target_organization_id: finalOrganizationId || data.target_organization_id || data.targetOrganizationId || "",
         campaignStartDate: finalCampaignStartDate || data.campaignStartDate || data.campaign_start_date || "",
         campaignEndDate: finalCampaignEndDate || data.campaignEndDate || data.campaign_end_date || "",
         campaign_start_date: finalCampaignStartDate || data.campaign_start_date || data.campaignStartDate || "",
@@ -1850,6 +1782,12 @@ app.post("/api/projects", auth, async (req, res) => {
         passation_logo_data_url: finalPassationLogoDataUrl || data.passation_logo_data_url || data.passationLogoDataUrl || ""
       }
     : data;
+
+  let finalOrganizationId = organizationId || null;
+
+  if (!finalOrganizationId) {
+    finalOrganizationId = await getUserPrimaryOrganizationId(req.user.id);
+  }
 
   if (projectId) {
     const currentProjectResult = await pool.query(
