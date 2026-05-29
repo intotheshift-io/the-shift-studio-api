@@ -1237,6 +1237,104 @@ async function sendCommunicationAssetsEmail(projectId) {
   };
 }
 
+
+async function getCommunicationProjectEmailRow(projectId) {
+  const result = await pool.query(`
+    SELECT
+      p.id,
+      p.title,
+      p.data,
+      p.share_url,
+      p.results_url,
+      p.campaign_start_date,
+      p.campaign_end_date,
+      o.name AS organization_name,
+      o.contact_email,
+      o.contact_name,
+      client.email AS user_email,
+      client.first_name AS user_first_name,
+      client.last_name AS user_last_name,
+      client.company_name AS user_company_name,
+      partner.email AS partner_email
+    FROM projects p
+    LEFT JOIN users client ON client.id = p.user_id
+    LEFT JOIN organizations o ON o.id = p.organization_id
+    LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+    WHERE p.id = $1
+    LIMIT 1
+  `, [projectId]);
+
+  return result.rows[0] || null;
+}
+
+function buildCommunicationLinksEmail({ row, recipient }) {
+  const title = extractProjectDisplayTitle(row.data || {}, row.title || 'votre autodiagnostic');
+  const kitUrl = buildProtectedFrontendUrl(`/kit-communication.html?projectId=${encodeURIComponent(row.id)}`);
+  const startDate = formatDateLongFr(row.campaign_start_date);
+  const endDate = formatDateLongFr(row.campaign_end_date);
+  const hello = recipient.name || '';
+
+  return {
+    subject: `Liens de campagne mis à jour — ${title}`,
+    text:
+`Bonjour ${hello},
+
+Les liens de votre campagne d’autodiagnostic "${title}" ont été mis à jour dans votre espace Shift Studio.
+
+Entreprise : ${recipient.companyName}
+Date de lancement : ${startDate}
+Date de clôture : ${endDate}
+
+Accéder au kit de communication :
+${kitUrl}
+
+Vous y retrouverez les liens à jour, le QR code, les messages prêts à copier et les ressources livrées.
+
+L’équipe Into The Shift`,
+    html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
+    <p>Bonjour ${escapeHtml(hello)},</p>
+    <p>Les liens de votre campagne d’autodiagnostic <strong>${escapeHtml(title)}</strong> ont été mis à jour dans votre espace Shift Studio.</p>
+    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
+      <p style="margin:0"><strong>Entreprise :</strong> ${escapeHtml(recipient.companyName)}<br>
+      <strong>Date de lancement :</strong> ${escapeHtml(startDate)}<br>
+      <strong>Date de clôture :</strong> ${escapeHtml(endDate)}</p>
+    </div>
+    <p style="margin:22px 0 10px">
+      <a href="${escapeHtml(kitUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au kit de communication</a>
+    </p>
+    <p>Vous y retrouverez les liens à jour, le QR code, les messages prêts à copier et les ressources livrées.</p>
+    <p>L’équipe Into The Shift</p>
+  </div>
+</div>`
+  };
+}
+
+async function sendCommunicationLinksUpdatedEmail(projectId) {
+  const row = await getCommunicationProjectEmailRow(projectId);
+  if (!row) return { sent: false, reason: 'PROJECT_NOT_FOUND' };
+  if (!row.share_url && !row.results_url) return { sent: false, reason: 'NO_LINKS' };
+
+  const recipient = getCommunicationRecipient(row);
+  if (!recipient.to) return { sent: false, reason: 'NO_RECIPIENT' };
+
+  const mail = buildCommunicationLinksEmail({ row, recipient });
+  const mailResult = await sendTransactionalEmail({
+    to: recipient.to,
+    cc: recipient.cc || undefined,
+    subject: mail.subject,
+    text: mail.text,
+    html: mail.html
+  });
+
+  return {
+    ...mailResult,
+    to: recipient.to,
+    cc: recipient.cc || ''
+  };
+}
+
 async function autoUnpublishExpiredProjects() {
   await pool.query(`
     UPDATE projects
@@ -1640,7 +1738,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-email-protected-links-v11",
+    version: "server-communication-links-notify-v12",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
     hasNoRecreateDeletedProjectGuard: true,
@@ -1669,6 +1767,8 @@ app.get("/debug-version", (req, res) => {
     hasPackUpgradeValidation: true,
     hasCommunicationAssets: true,
     hasProjectCommanditaireEmails: true,
+    hasCommunicationLinksNotify: true,
+    hasOrganizationUsersRoute: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -2931,6 +3031,48 @@ app.get("/api/admin/organizations", auth, requireAdmin, async (req, res) => {
   }
 });
 
+
+app.get("/api/admin/organizations/:id/users", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(`
+      SELECT
+        u.id,
+        u.email,
+        u.first_name,
+        u.last_name,
+        u.company_name,
+        u.job_title,
+        u.role AS user_role,
+        u.status,
+        ou.role AS organization_role,
+        ou.created_at AS attached_at
+      FROM organization_users ou
+      JOIN users u ON u.id = ou.user_id
+      WHERE ou.organization_id = $1
+      ORDER BY ou.created_at ASC, u.last_name ASC, u.first_name ASC, u.email ASC
+    `, [id]);
+
+    res.json({
+      users: result.rows.map((row) => ({
+        id: row.id,
+        email: row.email || "",
+        firstName: row.first_name || "",
+        lastName: row.last_name || "",
+        companyName: row.company_name || "",
+        jobTitle: row.job_title || "",
+        role: row.organization_role || "member",
+        userRole: row.user_role || "client",
+        status: row.status || "active",
+        attachedAt: row.attached_at || null
+      }))
+    });
+  } catch (err) {
+    console.error("GET /api/admin/organizations/:id/users", err);
+    res.status(500).json({ error: "Erreur chargement comptes rattachés." });
+  }
+});
+
 app.patch("/api/admin/users/:id/passations", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
   const { passationsQuota, passationsUsed } = req.body;
@@ -3984,6 +4126,31 @@ app.post("/api/admin/projects/:id/communication-assets/notify", auth, requireAdm
   } catch (err) {
     console.error("POST /api/admin/projects/:id/communication-assets/notify", err);
     res.status(500).json({ error: "Erreur notification ressources de communication." });
+  }
+});
+
+
+app.post("/api/admin/projects/:id/communication-links/notify", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const project = await getProjectForCommunicationAccess(id, req.user);
+    if (!project) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const mailResult = await sendCommunicationLinksUpdatedEmail(id);
+
+    res.json({
+      ok: mailResult.sent,
+      emailSent: mailResult.sent,
+      emailStatus: mailResult.reason || "SENT",
+      to: mailResult.to || "",
+      cc: mailResult.cc || ""
+    });
+  } catch (err) {
+    console.error("POST /api/admin/projects/:id/communication-links/notify", err);
+    res.status(500).json({ error: "Erreur notification liens de communication." });
   }
 });
 
