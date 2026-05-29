@@ -388,6 +388,25 @@ async function initDb() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS project_communication_assets (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size_bytes INTEGER DEFAULT 0,
+      data_url TEXT NOT NULL,
+      uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS communication_assets_email_sent_at TIMESTAMP;
+  `);
 }
 
 async function auth(req, res, next) {
@@ -914,6 +933,185 @@ async function sendProjectPublicationEmail(projectId) {
   };
 }
 
+
+async function getProjectForCommunicationAccess(projectId, user) {
+  const result = await pool.query(
+    `SELECT
+       p.*,
+       o.name AS organization_name,
+       o.contact_name,
+       o.contact_email,
+       o.created_by AS organization_created_by,
+       partner.email AS partner_email
+     FROM projects p
+     LEFT JOIN organizations o ON o.id = p.organization_id
+     LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+     WHERE p.id = $1
+       AND (
+         p.user_id = $2
+         OR p.created_by = $2
+         OR o.created_by = $2
+         OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = p.organization_id AND ou.user_id = $2)
+         OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
+       )
+     LIMIT 1`,
+    [projectId, user.id]
+  );
+
+  return result.rows[0] || null;
+}
+
+function formatCommunicationAsset(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    fileName: row.file_name || '',
+    file_name: row.file_name || '',
+    mimeType: row.mime_type || '',
+    mime_type: row.mime_type || '',
+    sizeBytes: Number(row.size_bytes || 0),
+    size_bytes: Number(row.size_bytes || 0),
+    dataUrl: row.data_url || '',
+    data_url: row.data_url || '',
+    uploadedBy: row.uploaded_by || null,
+    createdAt: row.created_at || null,
+    created_at: row.created_at || null
+  };
+}
+
+function isValidCommunicationAsset({ fileName, mimeType, dataUrl, sizeBytes }) {
+  const allowedMime = ['application/pdf', 'image/png', 'image/jpeg'];
+  const safeName = String(fileName || '').trim();
+  const safeMime = String(mimeType || '').trim();
+  const safeDataUrl = String(dataUrl || '').trim();
+  const safeSize = Number(sizeBytes || 0);
+
+  if (!safeName || safeName.length > 180) return false;
+  if (!allowedMime.includes(safeMime)) return false;
+  if (!safeDataUrl.startsWith(`data:${safeMime};base64,`)) return false;
+  if (!Number.isFinite(safeSize) || safeSize <= 0 || safeSize > 4 * 1024 * 1024) return false;
+  return true;
+}
+
+function getCommunicationRecipient(row) {
+  const clientEmail = row.contact_email || row.user_email || '';
+  const clientName =
+    row.contact_name ||
+    row.user_company_name ||
+    `${row.user_first_name || ''} ${row.user_last_name || ''}`.trim() ||
+    '';
+
+  return {
+    to: clientEmail,
+    cc: row.partner_email || '',
+    name: clientName,
+    companyName: row.organization_name || row.user_company_name || '—'
+  };
+}
+
+function buildCommunicationAssetsEmail({ row, recipient, assets }) {
+  const title = extractProjectDisplayTitle(row.data || {}, row.title || 'votre autodiagnostic');
+  const kitUrl = `${FRONTEND_URL}/kit-communication.html?projectId=${encodeURIComponent(row.id)}`;
+  const assetListText = (assets || []).map((asset) => `- ${asset.file_name}`).join('\n') || '- Ressources disponibles';
+  const assetListHtml = (assets || []).map((asset) => `<li>${escapeHtml(asset.file_name)}</li>`).join('') || '<li>Ressources disponibles</li>';
+  const hello = recipient.name || '';
+
+  return {
+    subject: `Vos ressources de communication sont disponibles — ${title}`,
+    text:
+`Bonjour ${hello},
+
+Vos ressources de communication pour l’autodiagnostic "${title}" sont désormais disponibles dans votre espace Shift Studio.
+
+Entreprise : ${recipient.companyName}
+
+Ressources ajoutées :
+${assetListText}
+
+Accéder au kit de communication :
+${kitUrl}
+
+Vous y retrouverez également le lien de passation, le lien résultats, le QR code et les messages prêts à copier.
+
+L’équipe Into The Shift`,
+    html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
+    <p>Bonjour ${escapeHtml(hello)},</p>
+    <p>Vos ressources de communication pour l’autodiagnostic <strong>${escapeHtml(title)}</strong> sont désormais disponibles dans votre espace Shift Studio.</p>
+    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
+      <p style="margin:0 0 8px"><strong>Entreprise :</strong> ${escapeHtml(recipient.companyName)}</p>
+      <p style="margin:0 0 8px"><strong>Ressources ajoutées :</strong></p>
+      <ul style="margin:0 0 0 18px;padding:0">${assetListHtml}</ul>
+    </div>
+    <p style="margin:22px 0 10px">
+      <a href="${escapeHtml(kitUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au kit de communication</a>
+    </p>
+    <p>Vous y retrouverez également le lien de passation, le lien résultats, le QR code et les messages prêts à copier.</p>
+    <p>L’équipe Into The Shift</p>
+  </div>
+</div>`
+  };
+}
+
+async function sendCommunicationAssetsEmail(projectId) {
+  const result = await pool.query(`
+    SELECT
+      p.id,
+      p.title,
+      p.data,
+      p.organization_id,
+      p.communication_assets_email_sent_at,
+      o.name AS organization_name,
+      o.contact_email,
+      o.contact_name,
+      client.email AS user_email,
+      client.first_name AS user_first_name,
+      client.last_name AS user_last_name,
+      client.company_name AS user_company_name,
+      partner.email AS partner_email
+    FROM projects p
+    LEFT JOIN users client ON client.id = p.user_id
+    LEFT JOIN organizations o ON o.id = p.organization_id
+    LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+    WHERE p.id = $1
+    LIMIT 1
+  `, [projectId]);
+
+  const row = result.rows[0];
+  if (!row) return { sent: false, reason: 'PROJECT_NOT_FOUND' };
+
+  const assetsResult = await pool.query(
+    `SELECT file_name FROM project_communication_assets WHERE project_id = $1 ORDER BY created_at DESC`,
+    [projectId]
+  );
+
+  if (!assetsResult.rows.length) return { sent: false, reason: 'NO_ASSETS' };
+
+  const recipient = getCommunicationRecipient(row);
+  if (!recipient.to) return { sent: false, reason: 'NO_RECIPIENT' };
+
+  const mail = buildCommunicationAssetsEmail({ row, recipient, assets: assetsResult.rows });
+  const mailResult = await sendTransactionalEmail({
+    to: recipient.to,
+    cc: recipient.cc || undefined,
+    subject: mail.subject,
+    text: mail.text,
+    html: mail.html
+  });
+
+  if (mailResult.sent) {
+    await pool.query(`UPDATE projects SET communication_assets_email_sent_at = NOW() WHERE id = $1`, [projectId]);
+  }
+
+  return {
+    ...mailResult,
+    to: recipient.to,
+    cc: recipient.cc || ''
+  };
+}
+
 async function autoUnpublishExpiredProjects() {
   await pool.query(`
     UPDATE projects
@@ -1341,6 +1539,7 @@ app.get("/debug-version", (req, res) => {
     hasAdminUserOrganizationTransfer: true,
     hasAdminOrganizationDelete: true,
     hasPackUpgradeValidation: true,
+    hasCommunicationAssets: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -3552,6 +3751,111 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
   } catch (err) {
     console.error("Erreur publication projet", err);
     res.status(500).json({ error: "Erreur publication projet" });
+  }
+});
+
+
+app.get("/api/projects/:id/communication-assets", auth, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const project = await getProjectForCommunicationAccess(id, req.user);
+    if (!project) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const result = await pool.query(
+      `SELECT *
+       FROM project_communication_assets
+       WHERE project_id = $1
+       ORDER BY created_at DESC`,
+      [id]
+    );
+
+    res.json({ assets: result.rows.map(formatCommunicationAsset) });
+  } catch (err) {
+    console.error("GET /api/projects/:id/communication-assets", err);
+    res.status(500).json({ error: "Erreur chargement ressources de communication." });
+  }
+});
+
+app.post("/api/admin/projects/:id/communication-assets", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const fileName = String(req.body?.fileName || req.body?.file_name || "").trim();
+  const mimeType = String(req.body?.mimeType || req.body?.mime_type || "").trim();
+  const dataUrl = String(req.body?.dataUrl || req.body?.data_url || "").trim();
+  const sizeBytes = Number(req.body?.sizeBytes || req.body?.size_bytes || 0);
+
+  if (!isValidCommunicationAsset({ fileName, mimeType, dataUrl, sizeBytes })) {
+    return res.status(400).json({ error: "Fichier invalide. Formats acceptés : PDF, PNG, JPG, 4 Mo maximum." });
+  }
+
+  try {
+    const project = await getProjectForCommunicationAccess(id, req.user);
+    if (!project) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO project_communication_assets (project_id, file_name, mime_type, size_bytes, data_url, uploaded_by)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [id, fileName, mimeType, sizeBytes, dataUrl, req.user.id]
+    );
+
+    await pool.query(`UPDATE projects SET updated_at = NOW() WHERE id = $1`, [id]);
+
+    res.json({ ok: true, asset: formatCommunicationAsset(result.rows[0]) });
+  } catch (err) {
+    console.error("POST /api/admin/projects/:id/communication-assets", err);
+    res.status(500).json({ error: "Erreur ajout ressource de communication." });
+  }
+});
+
+app.delete("/api/admin/communication-assets/:assetId", auth, requireAdmin, async (req, res) => {
+  const { assetId } = req.params;
+
+  try {
+    const existing = await pool.query(
+      `SELECT project_id FROM project_communication_assets WHERE id = $1 LIMIT 1`,
+      [assetId]
+    );
+
+    if (!existing.rows[0]) {
+      return res.status(404).json({ error: "Ressource introuvable" });
+    }
+
+    await pool.query(`DELETE FROM project_communication_assets WHERE id = $1`, [assetId]);
+    await pool.query(`UPDATE projects SET updated_at = NOW() WHERE id = $1`, [existing.rows[0].project_id]);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /api/admin/communication-assets/:assetId", err);
+    res.status(500).json({ error: "Erreur suppression ressource de communication." });
+  }
+});
+
+app.post("/api/admin/projects/:id/communication-assets/notify", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const project = await getProjectForCommunicationAccess(id, req.user);
+    if (!project) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const mailResult = await sendCommunicationAssetsEmail(id);
+
+    res.json({
+      ok: mailResult.sent,
+      emailSent: mailResult.sent,
+      emailStatus: mailResult.reason || "SENT",
+      to: mailResult.to || "",
+      cc: mailResult.cc || ""
+    });
+  } catch (err) {
+    console.error("POST /api/admin/projects/:id/communication-assets/notify", err);
+    res.status(500).json({ error: "Erreur notification ressources de communication." });
   }
 });
 
