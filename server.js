@@ -100,6 +100,26 @@ function escapeHtml(value = "") {
     .replaceAll("'", "&#039;");
 }
 
+function normalizeFrontendPath(path = "") {
+  const cleanPath = String(path || "").trim() || "/";
+  if (/^https?:\/\//i.test(cleanPath)) {
+    try {
+      const url = new URL(cleanPath);
+      return `${url.pathname || "/"}${url.search || ""}${url.hash || ""}`;
+    } catch (err) {
+      return "/";
+    }
+  }
+
+  return cleanPath.startsWith("/") ? cleanPath : `/${cleanPath}`;
+}
+
+function buildProtectedFrontendUrl(path = "") {
+  const nextPath = normalizeFrontendPath(path);
+  const encodedNext = encodeURIComponent(nextPath);
+  return `${FRONTEND_URL}/login.html?next=${encodedNext}&redirect=${encodedNext}`;
+}
+
 function mailerIsConfigured() {
   return Boolean(SMTP_HOST && SMTP_PORT && SMTP_USER && SMTP_PASS);
 }
@@ -387,25 +407,6 @@ async function initDb() {
       end_date DATE,
       created_at TIMESTAMP DEFAULT NOW()
     );
-  `);
-
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS project_communication_assets (
-      id SERIAL PRIMARY KEY,
-      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      file_name TEXT NOT NULL,
-      mime_type TEXT NOT NULL,
-      size_bytes INTEGER DEFAULT 0,
-      data_url TEXT NOT NULL,
-      uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-      created_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
-
-  await pool.query(`
-    ALTER TABLE projects
-    ADD COLUMN IF NOT EXISTS communication_assets_email_sent_at TIMESTAMP;
   `);
 }
 
@@ -819,7 +820,7 @@ function buildPublicationEmail({ row, recipient }) {
     ? "Illimité"
     : `${Math.max(0, Number(row.organization_passations_quota || 0) - Number(row.organization_passations_used || 0)).toLocaleString("fr-FR")} passations restantes`;
   const hello = recipient.name || "";
-  const campaignUrl = `${FRONTEND_URL}/campagne.html?projectId=${encodeURIComponent(row.id)}`;
+  const mesAdUrl = buildProtectedFrontendUrl('/mes-autodiagnostics.html');
 
   return {
     subject: `Votre autodiagnostic est maintenant publié — ${title}`,
@@ -835,12 +836,10 @@ Récapitulatif
 - Date de clôture : ${endDate}
 - Passations restantes : ${passationsLabel}
 
-Accès à la campagne
-- Lien de passation : ${row.share_url}
-- Lien résultats : ${row.results_url}
-- Espace campagne et QR code : ${campaignUrl}
+Accéder à votre espace Shift Studio :
+${mesAdUrl}
 
-Le lien de passation sera activable à partir de la date de lancement prévue. Vous pouvez dès maintenant préparer vos supports de communication, copier le QR code de campagne et conserver le lien résultats pour le suivi une fois la campagne ouverte.
+Le lien de passation sera activable à partir de la date de lancement prévue. Nous allons bientôt vous livrer des ressources dans votre kit de communication : QR code, messages prêts à copier et supports de diffusion.
 
 Si vous souhaitez modifier votre campagne après publication, contactez-nous à contact@intotheshift.io.
 
@@ -861,13 +860,11 @@ L’équipe Into The Shift`,
     </div>
 
     <p style="margin:22px 0 10px">
-      <a href="${escapeHtml(campaignUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder à ma campagne et au QR code</a>
+      <a href="${escapeHtml(mesAdUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder à mes autodiagnostics</a>
     </p>
 
-    <p><strong>Lien de passation :</strong><br><a href="${escapeHtml(row.share_url)}" style="color:#007883">${escapeHtml(row.share_url)}</a></p>
-    <p><strong>Lien résultats :</strong><br><a href="${escapeHtml(row.results_url)}" style="color:#007883">${escapeHtml(row.results_url)}</a></p>
-
-    <p>Le lien de passation sera activable à partir de la date de lancement prévue. Vous pouvez dès maintenant préparer vos supports de communication, copier le QR code de campagne et conserver le lien résultats pour le suivi une fois la campagne ouverte.</p>
+    <p>Le lien de passation sera activable à partir de la date de lancement prévue. Nous allons bientôt vous livrer des ressources dans votre <strong>kit de communication</strong> : QR code, messages prêts à copier et supports de diffusion.</p>
+    <p>Lorsque ces ressources seront disponibles, vous recevrez un email avec un accès sécurisé vers le kit de communication.</p>
     <p>Si vous souhaitez modifier votre campagne après publication, contactez-nous à <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p>
     <p>L’équipe Into The Shift</p>
   </div>
@@ -1012,7 +1009,7 @@ function getCommunicationRecipient(row) {
 
 function buildCommunicationAssetsEmail({ row, recipient, assets }) {
   const title = extractProjectDisplayTitle(row.data || {}, row.title || 'votre autodiagnostic');
-  const kitUrl = `${FRONTEND_URL}/kit-communication.html?projectId=${encodeURIComponent(row.id)}`;
+  const kitUrl = buildProtectedFrontendUrl(`/kit-communication.html?projectId=${encodeURIComponent(row.id)}`);
   const assetListText = (assets || []).map((asset) => `- ${asset.file_name}`).join('\n') || '- Ressources disponibles';
   const assetListHtml = (assets || []).map((asset) => `<li>${escapeHtml(asset.file_name)}</li>`).join('') || '<li>Ressources disponibles</li>';
   const hello = recipient.name || '';
@@ -1512,7 +1509,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-pack-upgrade-validation-v10-for-update-of-p",
+    version: "server-email-protected-links-v11",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
     hasNoRecreateDeletedProjectGuard: true,
@@ -1539,7 +1536,6 @@ app.get("/debug-version", (req, res) => {
     hasAdminUserOrganizationTransfer: true,
     hasAdminOrganizationDelete: true,
     hasPackUpgradeValidation: true,
-    hasCommunicationAssets: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -3085,7 +3081,7 @@ app.post("/api/admin/organizations/:id/users", auth, requireAdmin, async (req, r
     const user = userResult.rows[0];
     await addUserToOrganization({ organizationId: id, userId: user.id, role: role || "member" });
 
-    const loginUrl = `${FRONTEND_URL}/login.html?redirect=account.html%3Ftab%3Dsecurite%26firstLogin%3D1`;
+    const loginUrl = buildProtectedFrontendUrl('/account.html?tab=securite&firstLogin=1');
     const mailResult = await sendTransactionalEmail({
       to: user.email,
       subject: "Votre accès Shift Studio est créé",
@@ -3754,111 +3750,6 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
   }
 });
 
-
-app.get("/api/projects/:id/communication-assets", auth, async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const project = await getProjectForCommunicationAccess(id, req.user);
-    if (!project) {
-      return res.status(404).json({ error: "Projet introuvable" });
-    }
-
-    const result = await pool.query(
-      `SELECT *
-       FROM project_communication_assets
-       WHERE project_id = $1
-       ORDER BY created_at DESC`,
-      [id]
-    );
-
-    res.json({ assets: result.rows.map(formatCommunicationAsset) });
-  } catch (err) {
-    console.error("GET /api/projects/:id/communication-assets", err);
-    res.status(500).json({ error: "Erreur chargement ressources de communication." });
-  }
-});
-
-app.post("/api/admin/projects/:id/communication-assets", auth, requireAdmin, async (req, res) => {
-  const { id } = req.params;
-  const fileName = String(req.body?.fileName || req.body?.file_name || "").trim();
-  const mimeType = String(req.body?.mimeType || req.body?.mime_type || "").trim();
-  const dataUrl = String(req.body?.dataUrl || req.body?.data_url || "").trim();
-  const sizeBytes = Number(req.body?.sizeBytes || req.body?.size_bytes || 0);
-
-  if (!isValidCommunicationAsset({ fileName, mimeType, dataUrl, sizeBytes })) {
-    return res.status(400).json({ error: "Fichier invalide. Formats acceptés : PDF, PNG, JPG, 4 Mo maximum." });
-  }
-
-  try {
-    const project = await getProjectForCommunicationAccess(id, req.user);
-    if (!project) {
-      return res.status(404).json({ error: "Projet introuvable" });
-    }
-
-    const result = await pool.query(
-      `INSERT INTO project_communication_assets (project_id, file_name, mime_type, size_bytes, data_url, uploaded_by)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      [id, fileName, mimeType, sizeBytes, dataUrl, req.user.id]
-    );
-
-    await pool.query(`UPDATE projects SET updated_at = NOW() WHERE id = $1`, [id]);
-
-    res.json({ ok: true, asset: formatCommunicationAsset(result.rows[0]) });
-  } catch (err) {
-    console.error("POST /api/admin/projects/:id/communication-assets", err);
-    res.status(500).json({ error: "Erreur ajout ressource de communication." });
-  }
-});
-
-app.delete("/api/admin/communication-assets/:assetId", auth, requireAdmin, async (req, res) => {
-  const { assetId } = req.params;
-
-  try {
-    const existing = await pool.query(
-      `SELECT project_id FROM project_communication_assets WHERE id = $1 LIMIT 1`,
-      [assetId]
-    );
-
-    if (!existing.rows[0]) {
-      return res.status(404).json({ error: "Ressource introuvable" });
-    }
-
-    await pool.query(`DELETE FROM project_communication_assets WHERE id = $1`, [assetId]);
-    await pool.query(`UPDATE projects SET updated_at = NOW() WHERE id = $1`, [existing.rows[0].project_id]);
-
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("DELETE /api/admin/communication-assets/:assetId", err);
-    res.status(500).json({ error: "Erreur suppression ressource de communication." });
-  }
-});
-
-app.post("/api/admin/projects/:id/communication-assets/notify", auth, requireAdmin, async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const project = await getProjectForCommunicationAccess(id, req.user);
-    if (!project) {
-      return res.status(404).json({ error: "Projet introuvable" });
-    }
-
-    const mailResult = await sendCommunicationAssetsEmail(id);
-
-    res.json({
-      ok: mailResult.sent,
-      emailSent: mailResult.sent,
-      emailStatus: mailResult.reason || "SENT",
-      to: mailResult.to || "",
-      cc: mailResult.cc || ""
-    });
-  } catch (err) {
-    console.error("POST /api/admin/projects/:id/communication-assets/notify", err);
-    res.status(500).json({ error: "Erreur notification ressources de communication." });
-  }
-});
-
 app.post("/api/admin/campaign-alerts/send", auth, requireAdmin, async (req, res) => {
   try {
     const mode = String(req.body?.mode || "all").toLowerCase();
@@ -4192,7 +4083,7 @@ app.post("/api/admin/users", auth, requireAdmin, async (req, res) => {
       }
     }
 
-    const loginUrl = `${FRONTEND_URL}/login.html?redirect=account.html%3Ftab%3Dsecurite%26firstLogin%3D1`;
+    const loginUrl = buildProtectedFrontendUrl('/account.html?tab=securite&firstLogin=1');
 
     const mailResult = await sendTransactionalEmail({
       to: user.email,
