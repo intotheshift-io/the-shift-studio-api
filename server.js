@@ -5,6 +5,8 @@ import jwt from "jsonwebtoken";
 import pg from "pg";
 import nodemailer from "nodemailer";
 import crypto from "crypto";
+import { createCampaignAlerts } from "./campaign-alerts.js";
+import { createPackAlerts } from "./pack-alerts.js";
 
 const { Pool } = pg;
 
@@ -289,6 +291,21 @@ async function initDb() {
   await pool.query(`
     ALTER TABLE organizations
     ADD COLUMN IF NOT EXISTS passations_used INTEGER DEFAULT 0;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_alert_low_sent_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_alert_critical_sent_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_alert_empty_sent_at TIMESTAMP;
   `);
 
   await pool.query(`
@@ -1335,226 +1352,24 @@ async function sendCommunicationLinksUpdatedEmail(projectId) {
   };
 }
 
-async function autoUnpublishExpiredProjects() {
-  await pool.query(`
-    UPDATE projects
-    SET status = 'unpublished',
-        unpublished_at = COALESCE(unpublished_at, NOW()),
-        updated_at = NOW()
-    WHERE status = 'published'
-      AND campaign_end_date IS NOT NULL
-      AND campaign_end_date < CURRENT_DATE
-  `);
-}
+const campaignAlerts = createCampaignAlerts({ pool, sendTransactionalEmail });
+const { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts } = campaignAlerts;
 
-function getCampaignAlertRecipient(row) {
-  const commanditaire = extractProjectCommanditaire(row.data || {});
-  const clientEmail = row.contact_email || row.user_email || "";
-  const clientName =
-    row.contact_name ||
-    row.user_company_name ||
-    `${row.user_first_name || ""} ${row.user_last_name || ""}`.trim() ||
-    commanditaire.name ||
-    "";
+const packAlerts = createPackAlerts({
+  pool,
+  sendTransactionalEmail,
+  adminEmail: process.env.ALERT_ADMIN_EMAIL || "contact@intotheshift.io"
+});
+const { processPackAlerts, runPackAlerts } = packAlerts;
 
-  const recipients = buildRecipientSet({
-    primary: clientEmail || commanditaire.email || row.partner_email,
-    cc: [commanditaire.email, row.partner_email]
-  });
-
+async function runOperationalAlerts() {
+  const campaign = await runCampaignAlerts();
+  const pack = await runPackAlerts();
   return {
-    to: recipients.to,
-    cc: recipients.cc,
-    name: clientName
-  };
-}
-function buildCampaignAlertEmail({ type, row, daysBefore, recipientName }) {
-  const title = row.title || "votre autodiagnostic";
-  const endDate = formatDateLongFr(row.campaign_end_date);
-  const clientName = row.organization_name || row.user_company_name || "—";
-  const hello = recipientName || "";
-
-  if (type === "unpublished") {
-    return {
-      subject: `Campagne dépubliée — ${title}`,
-      text:
-`Bonjour ${hello},
-
-La campagne d’autodiagnostic "${title}" est maintenant terminée et a été dépubliée.
-
-Client concerné : ${clientName}
-Date de fin de campagne : ${endDate}
-
-Le lien de passation n’est plus mis en avant. L’accès aux résultats reste disponible si l’URL résultats a été renseignée.
-
-Pour relancer ou prolonger la campagne, contactez contact@intotheshift.io.
-
-L’équipe Into The Shift`,
-      html:
-`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.5">
-  <p>Bonjour ${escapeHtml(hello)},</p>
-  <p>La campagne d’autodiagnostic <strong>${escapeHtml(title)}</strong> est maintenant terminée et a été dépubliée.</p>
-  <p><strong>Client concerné :</strong> ${escapeHtml(clientName)}<br>
-  <strong>Date de fin de campagne :</strong> ${escapeHtml(endDate)}</p>
-  <p>Le lien de passation n’est plus mis en avant. L’accès aux résultats reste disponible si l’URL résultats a été renseignée.</p>
-  <p>Pour relancer ou prolonger la campagne, contactez <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p>
-  <p>L’équipe Into The Shift</p>
-</div>`
-    };
-  }
-
-  return {
-    subject: `Votre autodiagnostic se termine dans ${daysBefore} jours — ${title}`,
-    text:
-`Bonjour ${hello},
-
-Votre campagne d’autodiagnostic "${title}" se termine dans ${daysBefore} jours.
-
-Client concerné : ${clientName}
-Date de fin prévue : ${endDate}
-
-Après cette date, le lien de passation ne sera plus mis en avant. L’accès aux résultats restera disponible si l’URL résultats a été renseignée.
-
-Pour prolonger la campagne ou modifier les dates, contactez contact@intotheshift.io.
-
-L’équipe Into The Shift`,
-    html:
-`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.5">
-  <p>Bonjour ${escapeHtml(hello)},</p>
-  <p>Votre campagne d’autodiagnostic <strong>${escapeHtml(title)}</strong> se termine dans <strong>${daysBefore} jours</strong>.</p>
-  <p><strong>Client concerné :</strong> ${escapeHtml(clientName)}<br>
-  <strong>Date de fin prévue :</strong> ${escapeHtml(endDate)}</p>
-  <p>Après cette date, le lien de passation ne sera plus mis en avant. L’accès aux résultats restera disponible si l’URL résultats a été renseignée.</p>
-  <p>Pour prolonger la campagne ou modifier les dates, contactez <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p>
-  <p>L’équipe Into The Shift</p>
-</div>`
-  };
-}
-
-async function getCampaignAlertRows({ type, daysBefore }) {
-  if (type === "unpublished") {
-    return pool.query(`
-      SELECT
-        p.id,
-        p.title,
-        p.data,
-        p.campaign_end_date,
-        p.results_url,
-        p.share_url,
-        o.name AS organization_name,
-        o.contact_email,
-        o.contact_name,
-        client.email AS user_email,
-        client.first_name AS user_first_name,
-        client.last_name AS user_last_name,
-        client.company_name AS user_company_name,
-        partner.email AS partner_email,
-        partner.first_name AS partner_first_name,
-        partner.last_name AS partner_last_name,
-        partner.company_name AS partner_company_name
-      FROM projects p
-      LEFT JOIN users client ON client.id = p.user_id
-      LEFT JOIN organizations o ON o.id = p.organization_id
-      LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
-      WHERE p.status = 'unpublished'
-        AND p.campaign_end_date IS NOT NULL
-        AND p.unpublished_alert_sent_at IS NULL
-      ORDER BY p.campaign_end_date ASC
-    `);
-  }
-
-  const sentColumn = Number(daysBefore) === 2 ? "end_alert_2_sent_at" : "end_alert_7_sent_at";
-
-  return pool.query(`
-    SELECT
-      p.id,
-      p.title,
-      p.data,
-      p.campaign_end_date,
-      p.results_url,
-      p.share_url,
-      o.name AS organization_name,
-      o.contact_email,
-      o.contact_name,
-      client.email AS user_email,
-      client.first_name AS user_first_name,
-      client.last_name AS user_last_name,
-      client.company_name AS user_company_name,
-      partner.email AS partner_email,
-      partner.first_name AS partner_first_name,
-      partner.last_name AS partner_last_name,
-      partner.company_name AS partner_company_name
-    FROM projects p
-    LEFT JOIN users client ON client.id = p.user_id
-    LEFT JOIN organizations o ON o.id = p.organization_id
-    LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
-    WHERE p.status = 'published'
-      AND p.campaign_end_date IS NOT NULL
-      AND p.${sentColumn} IS NULL
-      AND p.campaign_end_date = CURRENT_DATE + ($1 || ' days')::interval
-    ORDER BY p.campaign_end_date ASC
-  `, [daysBefore]);
-}
-
-async function processCampaignAlerts({ type, daysBefore }) {
-  const result = await getCampaignAlertRows({ type, daysBefore });
-  const sent = [];
-  const skipped = [];
-
-  for (const row of result.rows) {
-    const recipient = getCampaignAlertRecipient(row);
-
-    if (!recipient.to) {
-      skipped.push({ id: row.id, reason: "NO_RECIPIENT" });
-      continue;
-    }
-
-    const mail = buildCampaignAlertEmail({
-      type,
-      row,
-      daysBefore,
-      recipientName: recipient.name
-    });
-
-    const mailResult = await sendTransactionalEmail({
-      to: recipient.to,
-      cc: recipient.cc || undefined,
-      subject: mail.subject,
-      text: mail.text,
-      html: mail.html
-    });
-
-    if (!mailResult.sent) {
-      skipped.push({ id: row.id, to: recipient.to, reason: mailResult.reason || "SEND_FAILED" });
-      continue;
-    }
-
-    if (type === "unpublished") {
-      await pool.query(`UPDATE projects SET unpublished_alert_sent_at = NOW() WHERE id = $1`, [row.id]);
-    } else if (Number(daysBefore) === 2) {
-      await pool.query(`UPDATE projects SET end_alert_2_sent_at = NOW() WHERE id = $1`, [row.id]);
-    } else {
-      await pool.query(`UPDATE projects SET end_alert_7_sent_at = NOW() WHERE id = $1`, [row.id]);
-    }
-
-    sent.push({ id: row.id, to: recipient.to, type, daysBefore: type === "unpublished" ? null : daysBefore });
-  }
-
-  return { sent, skipped };
-}
-
-async function runCampaignAlerts() {
-  const alert7 = await processCampaignAlerts({ type: "ending", daysBefore: 7 });
-  const alert2 = await processCampaignAlerts({ type: "ending", daysBefore: 2 });
-  await autoUnpublishExpiredProjects();
-  const unpublished = await processCampaignAlerts({ type: "unpublished" });
-
-  return {
-    alert7,
-    alert2,
-    unpublished,
-    totalSent: alert7.sent.length + alert2.sent.length + unpublished.sent.length,
-    totalSkipped: alert7.skipped.length + alert2.skipped.length + unpublished.skipped.length
+    campaign,
+    pack,
+    totalSent: Number(campaign.totalSent || 0) + Number(pack.totalSent || 0),
+    totalSkipped: Number(campaign.totalSkipped || 0) + Number(pack.totalSkipped || 0)
   };
 }
 
@@ -1765,6 +1580,9 @@ app.get("/debug-version", (req, res) => {
     hasAdminUserOrganizationTransfer: true,
     hasAdminOrganizationDelete: true,
     hasPackUpgradeValidation: true,
+    hasCampaignAlertsModule: true,
+    hasPackAlerts: true,
+    hasOperationalAlerts: true,
     hasCommunicationAssets: true,
     hasProjectCommanditaireEmails: true,
     hasCommunicationLinksNotify: true,
@@ -3216,7 +3034,10 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
       `UPDATE organizations
        SET passations_pack = $1,
            passations_quota = $2,
-           passations_used = $3
+           passations_used = $3,
+           pack_alert_low_sent_at = NULL,
+           pack_alert_critical_sent_at = NULL,
+           pack_alert_empty_sent_at = NULL
        WHERE id = $4
        RETURNING *`,
       [
@@ -4177,6 +3998,27 @@ app.post("/api/admin/campaign-alerts/send", auth, requireAdmin, async (req, res)
   }
 });
 
+app.post("/api/admin/pack-alerts/send", auth, requireAdmin, async (req, res) => {
+  try {
+    const mode = String(req.body?.mode || "all").toLowerCase();
+    const result = await processPackAlerts({ mode });
+    res.json({ ok: true, pack: result, totalSent: result.sent.length, totalSkipped: result.skipped.length });
+  } catch (err) {
+    console.error("Erreur alertes pack", err);
+    res.status(500).json({ error: "Erreur alertes pack" });
+  }
+});
+
+app.post("/api/admin/operational-alerts/send", auth, requireAdmin, async (req, res) => {
+  try {
+    const result = await runOperationalAlerts();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error("Erreur alertes opérationnelles", err);
+    res.status(500).json({ error: "Erreur alertes opérationnelles" });
+  }
+});
+
 app.post("/api/campaign-alerts/run", async (req, res) => {
   const secret = req.headers["x-alert-secret"] || req.query.secret || req.body?.secret || "";
 
@@ -4190,6 +4032,22 @@ app.post("/api/campaign-alerts/run", async (req, res) => {
   } catch (err) {
     console.error("Erreur run alertes campagne", err);
     res.status(500).json({ error: "Erreur alertes campagne" });
+  }
+});
+
+app.post("/api/operational-alerts/run", async (req, res) => {
+  const secret = req.headers["x-alert-secret"] || req.query.secret || req.body?.secret || "";
+
+  if (!ALERT_CRON_SECRET || secret !== ALERT_CRON_SECRET) {
+    return res.status(403).json({ error: "Accès refusé" });
+  }
+
+  try {
+    const result = await runOperationalAlerts();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error("Erreur run alertes opérationnelles", err);
+    res.status(500).json({ error: "Erreur alertes opérationnelles" });
   }
 });
 
@@ -5022,11 +4880,11 @@ initDb().then(() => {
   });
 
   setTimeout(() => {
-    runCampaignAlerts().catch((err) => console.error("Erreur alertes campagne au démarrage", err));
+    runOperationalAlerts().catch((err) => console.error("Erreur alertes opérationnelles au démarrage", err));
   }, 30 * 1000);
 
   setInterval(() => {
-    runCampaignAlerts().catch((err) => console.error("Erreur alertes campagne planifiées", err));
+    runOperationalAlerts().catch((err) => console.error("Erreur alertes opérationnelles planifiées", err));
   }, 6 * 60 * 60 * 1000);
 });
 
