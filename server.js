@@ -408,6 +408,25 @@ async function initDb() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS project_communication_assets (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size_bytes INTEGER DEFAULT 0,
+      data_url TEXT NOT NULL,
+      uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS communication_assets_email_sent_at TIMESTAMP;
+  `);
 }
 
 async function auth(req, res, next) {
@@ -795,23 +814,124 @@ function formatDateLongFr(value) {
   return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" });
 }
 
+function firstNonEmptyValue(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") return String(value).trim();
+  }
+  return "";
+}
+
+function extractProjectCommanditaire(data = {}) {
+  const d = data && typeof data === "object" ? data : {};
+  const payload = d.payload && typeof d.payload === "object" ? d.payload : {};
+  const state = d.state && typeof d.state === "object" ? d.state : {};
+  const param = getProjectParamData(d);
+  const campaign = d.campagne || d.campaign || payload.campagne || payload.campaign || state.campagne || state.campaign || {};
+  const communication = d.communication || payload.communication || state.communication || {};
+  const clientInfo = d.clientInfo || d.client_info || payload.clientInfo || payload.client_info || state.clientInfo || state.client_info || {};
+  const transmission = d.transmission && typeof d.transmission === "object" ? d.transmission : {};
+  const transmissionPayload = transmission.payload && typeof transmission.payload === "object" ? transmission.payload : {};
+  const transmissionClientInfo = transmission.clientInfo || transmission.client_info || transmissionPayload.clientInfo || transmissionPayload.client_info || {};
+
+  const firstName = firstNonEmptyValue(
+    campaign.commanditaireFirstName, campaign.commanditaire_first_name,
+    campaign.contactFirstName, campaign.contact_first_name,
+    param.commanditaireFirstName, param.commanditaire_first_name,
+    param.contactFirstName, param.contact_first_name,
+    clientInfo.firstName, clientInfo.first_name, clientInfo.prenom,
+    transmissionClientInfo.firstName, transmissionClientInfo.first_name, transmissionClientInfo.prenom
+  );
+  const lastName = firstNonEmptyValue(
+    campaign.commanditaireLastName, campaign.commanditaire_last_name,
+    campaign.contactLastName, campaign.contact_last_name,
+    param.commanditaireLastName, param.commanditaire_last_name,
+    param.contactLastName, param.contact_last_name,
+    clientInfo.lastName, clientInfo.last_name, clientInfo.nom,
+    transmissionClientInfo.lastName, transmissionClientInfo.last_name, transmissionClientInfo.nom
+  );
+
+  const name = firstNonEmptyValue(
+    campaign.commanditaireName, campaign.commanditaire_name,
+    campaign.referentName, campaign.referent_name,
+    campaign.contactName, campaign.contact_name,
+    communication.commanditaireName, communication.commanditaire_name,
+    communication.contactName, communication.contact_name,
+    param.commanditaireName, param.commanditaire_name,
+    param.referentName, param.referent_name,
+    param.contactName, param.contact_name,
+    clientInfo.name, clientInfo.fullName, clientInfo.full_name,
+    transmissionClientInfo.name, transmissionClientInfo.fullName, transmissionClientInfo.full_name,
+    [firstName, lastName].filter(Boolean).join(" ")
+  );
+
+  const email = firstNonEmptyValue(
+    campaign.commanditaireEmail, campaign.commanditaire_email,
+    campaign.referentEmail, campaign.referent_email,
+    campaign.contactEmail, campaign.contact_email,
+    communication.commanditaireEmail, communication.commanditaire_email,
+    communication.contactEmail, communication.contact_email,
+    param.commanditaireEmail, param.commanditaire_email,
+    param.referentEmail, param.referent_email,
+    param.contactEmail, param.contact_email,
+    d.commanditaireEmail, d.commanditaire_email,
+    payload.commanditaireEmail, payload.commanditaire_email,
+    state.commanditaireEmail, state.commanditaire_email,
+    clientInfo.email, clientInfo.mail,
+    transmissionClientInfo.email, transmissionClientInfo.mail
+  );
+
+  return { name, email };
+}
+
+function normalizeEmail(value = "") {
+  return String(value || "").trim().toLowerCase();
+}
+
+function uniqueEmails(...values) {
+  const seen = new Set();
+  const emails = [];
+  for (const value of values.flat()) {
+    const email = String(value || "").trim();
+    const key = normalizeEmail(email);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    emails.push(email);
+  }
+  return emails;
+}
+
+function buildRecipientSet({ primary, cc = [] }) {
+  const all = uniqueEmails(primary, cc);
+  return {
+    to: all[0] || "",
+    cc: all.slice(1).join(",")
+  };
+}
+
 
 function getPublicationRecipient(row) {
-  const clientEmail = row.contact_email || row.user_email || "";
+  const commanditaire = extractProjectCommanditaire(row.data || {});
+  const ownerEmail = row.contact_email || row.user_email || "";
   const clientName =
     row.contact_name ||
     row.user_company_name ||
     `${row.user_first_name || ""} ${row.user_last_name || ""}`.trim() ||
     "";
 
+  const recipients = buildRecipientSet({
+    primary: ownerEmail || commanditaire.email,
+    cc: [commanditaire.email, row.partner_email]
+  });
+
   return {
-    to: clientEmail,
-    cc: row.partner_email || "",
-    name: clientName,
+    to: recipients.to,
+    cc: recipients.cc,
+    name: clientName || commanditaire.name,
+    commanditaireName: commanditaire.name,
+    commanditaireEmail: commanditaire.email,
     companyName: row.organization_name || row.user_company_name || "—"
   };
 }
-
 function buildPublicationEmail({ row, recipient }) {
   const title = extractProjectDisplayTitle(row.data || {}, row.title || "votre autodiagnostic");
   const startDate = formatDateLongFr(row.campaign_start_date);
@@ -834,7 +954,8 @@ Récapitulatif
 - Entreprise : ${recipient.companyName}
 - Date de lancement : ${startDate}
 - Date de clôture : ${endDate}
-- Passations restantes : ${passationsLabel}
+- Passations restantes : ${passationsLabel}${recipient.commanditaireEmail ? `
+- Commanditaire campagne : ${recipient.commanditaireName || "—"} — ${recipient.commanditaireEmail}` : ""}
 
 Accéder à votre espace Shift Studio :
 ${mesAdUrl}
@@ -856,7 +977,7 @@ L’équipe Into The Shift`,
       <strong>Entreprise :</strong> ${escapeHtml(recipient.companyName)}<br>
       <strong>Date de lancement :</strong> ${escapeHtml(startDate)}<br>
       <strong>Date de clôture :</strong> ${escapeHtml(endDate)}<br>
-      <strong>Passations restantes :</strong> ${escapeHtml(passationsLabel)}</p>
+      <strong>Passations restantes :</strong> ${escapeHtml(passationsLabel)}${recipient.commanditaireEmail ? `<br><strong>Commanditaire campagne :</strong> ${escapeHtml(recipient.commanditaireName || "—")} — ${escapeHtml(recipient.commanditaireEmail)}` : ""}</p>
     </div>
 
     <p style="margin:22px 0 10px">
@@ -992,21 +1113,28 @@ function isValidCommunicationAsset({ fileName, mimeType, dataUrl, sizeBytes }) {
 }
 
 function getCommunicationRecipient(row) {
-  const clientEmail = row.contact_email || row.user_email || '';
+  const commanditaire = extractProjectCommanditaire(row.data || {});
+  const ownerEmail = row.contact_email || row.user_email || '';
   const clientName =
     row.contact_name ||
     row.user_company_name ||
     `${row.user_first_name || ''} ${row.user_last_name || ''}`.trim() ||
     '';
 
+  const recipients = buildRecipientSet({
+    primary: ownerEmail || commanditaire.email,
+    cc: [commanditaire.email, row.partner_email]
+  });
+
   return {
-    to: clientEmail,
-    cc: row.partner_email || '',
-    name: clientName,
+    to: recipients.to,
+    cc: recipients.cc,
+    name: clientName || commanditaire.name,
+    commanditaireName: commanditaire.name,
+    commanditaireEmail: commanditaire.email,
     companyName: row.organization_name || row.user_company_name || '—'
   };
 }
-
 function buildCommunicationAssetsEmail({ row, recipient, assets }) {
   const title = extractProjectDisplayTitle(row.data || {}, row.title || 'votre autodiagnostic');
   const kitUrl = buildProtectedFrontendUrl(`/kit-communication.html?projectId=${encodeURIComponent(row.id)}`);
@@ -1122,26 +1250,26 @@ async function autoUnpublishExpiredProjects() {
 }
 
 function getCampaignAlertRecipient(row) {
-  if (row.partner_email) {
-    return {
-      to: row.partner_email,
-      name:
-        row.partner_company_name ||
-        `${row.partner_first_name || ""} ${row.partner_last_name || ""}`.trim() ||
-        "partenaire"
-    };
-  }
+  const commanditaire = extractProjectCommanditaire(row.data || {});
+  const clientEmail = row.contact_email || row.user_email || "";
+  const clientName =
+    row.contact_name ||
+    row.user_company_name ||
+    `${row.user_first_name || ""} ${row.user_last_name || ""}`.trim() ||
+    commanditaire.name ||
+    "";
+
+  const recipients = buildRecipientSet({
+    primary: clientEmail || commanditaire.email || row.partner_email,
+    cc: [commanditaire.email, row.partner_email]
+  });
 
   return {
-    to: row.contact_email || row.user_email || "",
-    name:
-      row.contact_name ||
-      row.user_company_name ||
-      `${row.user_first_name || ""} ${row.user_last_name || ""}`.trim() ||
-      ""
+    to: recipients.to,
+    cc: recipients.cc,
+    name: clientName
   };
 }
-
 function buildCampaignAlertEmail({ type, row, daysBefore, recipientName }) {
   const title = row.title || "votre autodiagnostic";
   const endDate = formatDateLongFr(row.campaign_end_date);
@@ -1211,6 +1339,7 @@ async function getCampaignAlertRows({ type, daysBefore }) {
       SELECT
         p.id,
         p.title,
+        p.data,
         p.campaign_end_date,
         p.results_url,
         p.share_url,
@@ -1242,6 +1371,7 @@ async function getCampaignAlertRows({ type, daysBefore }) {
     SELECT
       p.id,
       p.title,
+      p.data,
       p.campaign_end_date,
       p.results_url,
       p.share_url,
@@ -1290,6 +1420,7 @@ async function processCampaignAlerts({ type, daysBefore }) {
 
     const mailResult = await sendTransactionalEmail({
       to: recipient.to,
+      cc: recipient.cc || undefined,
       subject: mail.subject,
       text: mail.text,
       html: mail.html
@@ -1536,6 +1667,8 @@ app.get("/debug-version", (req, res) => {
     hasAdminUserOrganizationTransfer: true,
     hasAdminOrganizationDelete: true,
     hasPackUpgradeValidation: true,
+    hasCommunicationAssets: true,
+    hasProjectCommanditaireEmails: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -3747,6 +3880,110 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
   } catch (err) {
     console.error("Erreur publication projet", err);
     res.status(500).json({ error: "Erreur publication projet" });
+  }
+});
+
+app.get("/api/projects/:id/communication-assets", auth, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const project = await getProjectForCommunicationAccess(id, req.user);
+    if (!project) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const result = await pool.query(
+      `SELECT *
+       FROM project_communication_assets
+       WHERE project_id = $1
+       ORDER BY created_at DESC`,
+      [id]
+    );
+
+    res.json({ assets: result.rows.map(formatCommunicationAsset) });
+  } catch (err) {
+    console.error("GET /api/projects/:id/communication-assets", err);
+    res.status(500).json({ error: "Erreur chargement ressources de communication." });
+  }
+});
+
+app.post("/api/admin/projects/:id/communication-assets", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const fileName = String(req.body?.fileName || req.body?.file_name || "").trim();
+  const mimeType = String(req.body?.mimeType || req.body?.mime_type || "").trim();
+  const dataUrl = String(req.body?.dataUrl || req.body?.data_url || "").trim();
+  const sizeBytes = Number(req.body?.sizeBytes || req.body?.size_bytes || 0);
+
+  if (!isValidCommunicationAsset({ fileName, mimeType, dataUrl, sizeBytes })) {
+    return res.status(400).json({ error: "Fichier invalide. Formats acceptés : PDF, PNG, JPG, 4 Mo maximum." });
+  }
+
+  try {
+    const project = await getProjectForCommunicationAccess(id, req.user);
+    if (!project) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO project_communication_assets (project_id, file_name, mime_type, size_bytes, data_url, uploaded_by)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [id, fileName, mimeType, sizeBytes, dataUrl, req.user.id]
+    );
+
+    await pool.query(`UPDATE projects SET updated_at = NOW() WHERE id = $1`, [id]);
+
+    res.json({ ok: true, asset: formatCommunicationAsset(result.rows[0]) });
+  } catch (err) {
+    console.error("POST /api/admin/projects/:id/communication-assets", err);
+    res.status(500).json({ error: "Erreur ajout ressource de communication." });
+  }
+});
+
+app.delete("/api/admin/communication-assets/:assetId", auth, requireAdmin, async (req, res) => {
+  const { assetId } = req.params;
+
+  try {
+    const existing = await pool.query(
+      `SELECT project_id FROM project_communication_assets WHERE id = $1 LIMIT 1`,
+      [assetId]
+    );
+
+    if (!existing.rows[0]) {
+      return res.status(404).json({ error: "Ressource introuvable" });
+    }
+
+    await pool.query(`DELETE FROM project_communication_assets WHERE id = $1`, [assetId]);
+    await pool.query(`UPDATE projects SET updated_at = NOW() WHERE id = $1`, [existing.rows[0].project_id]);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /api/admin/communication-assets/:assetId", err);
+    res.status(500).json({ error: "Erreur suppression ressource de communication." });
+  }
+});
+
+app.post("/api/admin/projects/:id/communication-assets/notify", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const project = await getProjectForCommunicationAccess(id, req.user);
+    if (!project) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const mailResult = await sendCommunicationAssetsEmail(id);
+
+    res.json({
+      ok: mailResult.sent,
+      emailSent: mailResult.sent,
+      emailStatus: mailResult.reason || "SENT",
+      to: mailResult.to || "",
+      cc: mailResult.cc || ""
+    });
+  } catch (err) {
+    console.error("POST /api/admin/projects/:id/communication-assets/notify", err);
+    res.status(500).json({ error: "Erreur notification ressources de communication." });
   }
 });
 
