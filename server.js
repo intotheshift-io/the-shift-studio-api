@@ -824,6 +824,38 @@ function applyPackUpgradeMetadata(data = {}, request = {}, status = "pending") {
   };
 }
 
+async function getOrganizationForPackUpgrade(organizationId) {
+  if (!organizationId) return {};
+  const result = await pool.query(
+    `SELECT
+       passations_pack,
+       passations_quota,
+       passations_used,
+       passations_pack AS organization_passations_pack,
+       passations_quota AS organization_passations_quota,
+       passations_used AS organization_passations_used
+     FROM organizations
+     WHERE id = $1
+     LIMIT 1`,
+    [organizationId]
+  );
+  return result.rows[0] || {};
+}
+
+async function notifyPackUpgradeRequestIfNeeded(projectId) {
+  if (!projectId || typeof sendPackUpgradeRequestEmail !== "function") return null;
+  try {
+    const result = await sendPackUpgradeRequestEmail(projectId);
+    if (result?.sent) {
+      console.log("Demande de devis pack envoyée", { projectId, to: result.to, cc: result.cc || "" });
+    }
+    return result;
+  } catch (err) {
+    console.error("Erreur notification demande de devis pack", err);
+    return { sent: false, reason: "SEND_FAILED" };
+  }
+}
+
 function formatDateLongFr(value) {
   if (!value) return "—";
   const d = new Date(value);
@@ -1360,7 +1392,7 @@ const packAlerts = createPackAlerts({
   sendTransactionalEmail,
   adminEmail: process.env.ALERT_ADMIN_EMAIL || "contact@intotheshift.io"
 });
-const { processPackAlerts, runPackAlerts } = packAlerts;
+const { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail } = packAlerts;
 
 async function runOperationalAlerts() {
   const campaign = await runCampaignAlerts();
@@ -1553,7 +1585,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-communication-links-notify-v12",
+    version: "server-pack-upgrade-request-email-v13",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
     hasNoRecreateDeletedProjectGuard: true,
@@ -1586,6 +1618,7 @@ app.get("/debug-version", (req, res) => {
     hasCommunicationAssets: true,
     hasProjectCommanditaireEmails: true,
     hasCommunicationLinksNotify: true,
+    hasPackUpgradeRequestEmail: true,
     hasOrganizationUsersRoute: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
@@ -2016,7 +2049,7 @@ app.post("/api/projects", auth, async (req, res) => {
   const finalPassationLogoDataUrl = extractPassationLogoDataUrl(data || {}, req.body || {});
   const finalTitle = extractProjectDisplayTitle(data || {}, title || "");
 
-  const normalizedData = data && typeof data === "object"
+  let normalizedData = data && typeof data === "object"
     ? {
         ...data,
         campaignStartDate: finalCampaignStartDate || data.campaignStartDate || data.campaign_start_date || "",
@@ -2034,6 +2067,12 @@ app.post("/api/projects", auth, async (req, res) => {
 
   if (!finalOrganizationId) {
     finalOrganizationId = await getUserPrimaryOrganizationId(req.user.id);
+  }
+
+  const packUpgradeOrganization = await getOrganizationForPackUpgrade(finalOrganizationId);
+  const packUpgradeRequest = getProjectPackUpgradeRequest(normalizedData || {}, packUpgradeOrganization || {});
+  if (packUpgradeRequest.requested && packUpgradeRequest.status === "pending") {
+    normalizedData = applyPackUpgradeMetadata(normalizedData || {}, packUpgradeRequest, "pending");
   }
 
   if (projectId) {
@@ -2091,6 +2130,9 @@ app.post("/api/projects", auth, async (req, res) => {
     );
 
     if (updateResult.rows[0]) {
+      if (packUpgradeRequest.requested && packUpgradeRequest.status === "pending") {
+        await notifyPackUpgradeRequestIfNeeded(updateResult.rows[0].id);
+      }
       return res.json({ project: updateResult.rows[0] });
     }
 
@@ -2121,6 +2163,10 @@ app.post("/api/projects", auth, async (req, res) => {
       finalPassationLogoDataUrl || null
     ]
   );
+
+  if (packUpgradeRequest.requested && packUpgradeRequest.status === "pending") {
+    await notifyPackUpgradeRequestIfNeeded(result.rows[0].id);
+  }
 
   res.json({ project: result.rows[0] });
 });
