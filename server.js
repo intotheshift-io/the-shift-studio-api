@@ -847,7 +847,7 @@ async function notifyPackUpgradeRequestIfNeeded(projectId) {
   try {
     const result = await sendPackUpgradeRequestEmail(projectId);
     if (result?.sent) {
-      console.log("Demande de devis pack envoyée", { projectId, to: result.to, cc: result.cc || "" });
+      console.log("Demande de devis pack envoyée", { projectId, internalTo: result.internalTo || result.to || "", clientTo: result.clientTo || "", clientCc: result.clientCc || "" });
     }
     return result;
   } catch (err) {
@@ -1585,7 +1585,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-pack-upgrade-request-email-v13",
+    version: "server-pack-upgrade-separate-emails-v14",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
     hasNoRecreateDeletedProjectGuard: true,
@@ -1619,6 +1619,7 @@ app.get("/debug-version", (req, res) => {
     hasProjectCommanditaireEmails: true,
     hasCommunicationLinksNotify: true,
     hasPackUpgradeRequestEmail: true,
+    hasPackUpgradeSeparateEmails: true,
     hasOrganizationUsersRoute: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,

@@ -48,17 +48,18 @@ function shouldSendPackAlert(row, status) {
 function getPackAlertRecipients(row, adminEmail) {
   const creatorName = `${row.creator_first_name || ""} ${row.creator_last_name || ""}`.trim() || row.creator_company_name || row.creator_email || "";
   const memberEmails = Array.isArray(row.organization_user_emails) ? row.organization_user_emails : [];
-  const cc = uniqueEmails(row.contact_email, row.creator_email, row.partner_email, memberEmails);
+  const clientEmails = uniqueEmails(row.contact_email, row.creator_email, row.partner_email, memberEmails);
 
   return {
-    to: adminEmail || DEFAULT_ADMIN_EMAIL,
-    cc: cc.join(","),
+    internalTo: adminEmail || DEFAULT_ADMIN_EMAIL,
+    clientTo: clientEmails[0] || "",
+    clientCc: clientEmails.slice(1).join(","),
     creatorName,
     clientName: row.name || "Client sans nom"
   };
 }
 
-function buildPackAlertEmail({ row, status, recipient }) {
+function buildPackAlertInternalEmail({ row, status, recipient }) {
   const remainingPercent = status.quota > 0 ? Math.round(status.remainingRate * 100) : 0;
   const subjectPrefix = status.type === "empty" ? "Pack épuisé" : status.type === "critical" ? "Pack critique" : "Pack bientôt épuisé";
   const clientName = recipient.clientName;
@@ -82,7 +83,7 @@ Contact client : ${row.contact_name || "—"} ${row.contact_email ? `<${row.cont
 
 ${recommendation}
 
-Cette alerte est envoyée à l’admin Into The Shift, avec le créateur du cockpit client, le partenaire éventuel et les comptes rattachés en copie.
+Alerte interne Into The Shift. Ne pas transférer telle quelle au client.
 
 L’équipe Into The Shift`,
     html:
@@ -98,7 +99,56 @@ L’équipe Into The Shift`,
       <strong>Contact client :</strong> ${escapeHtml(row.contact_name || "—")} ${row.contact_email ? `— ${escapeHtml(row.contact_email)}` : ""}</p>
     </div>
     <p>${escapeHtml(recommendation)}</p>
-    <p>Cette alerte est envoyée à l’admin Into The Shift, avec le créateur du cockpit client, le partenaire éventuel et les comptes rattachés en copie.</p>
+    <p><strong>Alerte interne Into The Shift.</strong> Ne pas transférer telle quelle au client.</p>
+    <p>L’équipe Into The Shift</p>
+  </div>
+</div>`
+  };
+}
+
+function buildPackAlertClientEmail({ row, status, recipient }) {
+  const remainingPercent = status.quota > 0 ? Math.round(status.remainingRate * 100) : 0;
+  const clientName = recipient.clientName;
+  const subjectPrefix = status.type === "empty"
+    ? "Votre pack de passations est épuisé"
+    : status.type === "critical"
+      ? "Votre pack de passations arrive à un niveau critique"
+      : "Votre pack de passations arrive bientôt à épuisement";
+
+  const nextStep = status.type === "empty"
+    ? "Nous allons revenir vers vous rapidement pour vous proposer une recharge adaptée avant toute nouvelle publication."
+    : "Nous vous recommandons d’anticiper une recharge si une campagne est en cours ou si vous prévoyez un nouvel autodiagnostic.";
+
+  return {
+    subject: `${subjectPrefix} — ${clientName}`,
+    text:
+`Bonjour,
+
+Votre solde de passations Into The Shift nécessite votre attention.
+
+Client : ${clientName}
+Passations utilisées : ${status.used.toLocaleString("fr-FR")}
+Quota : ${status.quota.toLocaleString("fr-FR")}
+Passations restantes : ${status.remaining.toLocaleString("fr-FR")} (${remainingPercent}%)
+
+${nextStep}
+
+Pour toute question, vous pouvez répondre directement à cet email.
+
+L’équipe Into The Shift`,
+    html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
+    <p>Bonjour,</p>
+    <p>Votre solde de passations <strong>Into The Shift</strong> nécessite votre attention.</p>
+    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
+      <p style="margin:0"><strong>Client :</strong> ${escapeHtml(clientName)}<br>
+      <strong>Passations utilisées :</strong> ${escapeHtml(status.used.toLocaleString("fr-FR"))}<br>
+      <strong>Quota :</strong> ${escapeHtml(status.quota.toLocaleString("fr-FR"))}<br>
+      <strong>Passations restantes :</strong> ${escapeHtml(status.remaining.toLocaleString("fr-FR"))} (${escapeHtml(String(remainingPercent))}%)</p>
+    </div>
+    <p>${escapeHtml(nextStep)}</p>
+    <p>Pour toute question, vous pouvez répondre directement à cet email.</p>
     <p>L’équipe Into The Shift</p>
   </div>
 </div>`
@@ -113,25 +163,55 @@ function formatPackChoiceLabel(request = {}) {
     : "Pack complémentaire";
 }
 
+function firstNonEmptyValue(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") return String(value).trim();
+  }
+  return "";
+}
+
+function extractPackProjectCommanditaire(data = {}) {
+  const d = data && typeof data === "object" ? data : {};
+  const payload = d.payload && typeof d.payload === "object" ? d.payload : {};
+  const state = d.state && typeof d.state === "object" ? d.state : {};
+  const param = d.parametrage || payload.parametrage || state.parametrage || {};
+  const campaign = d.campagne || d.campaign || payload.campagne || payload.campaign || state.campagne || state.campaign || {};
+  const communication = d.communication || payload.communication || state.communication || {};
+  const clientInfo = d.clientInfo || d.client_info || payload.clientInfo || payload.client_info || state.clientInfo || state.client_info || {};
+
+  const firstName = firstNonEmptyValue(campaign.commanditaireFirstName, campaign.commanditaire_first_name, param.commanditaireFirstName, param.commanditaire_first_name, clientInfo.firstName, clientInfo.first_name, clientInfo.prenom);
+  const lastName = firstNonEmptyValue(campaign.commanditaireLastName, campaign.commanditaire_last_name, param.commanditaireLastName, param.commanditaire_last_name, clientInfo.lastName, clientInfo.last_name, clientInfo.nom);
+  const name = firstNonEmptyValue(campaign.commanditaireName, campaign.commanditaire_name, campaign.referentName, campaign.referent_name, campaign.contactName, campaign.contact_name, communication.commanditaireName, communication.commanditaire_name, param.commanditaireName, param.commanditaire_name, clientInfo.name, clientInfo.fullName, clientInfo.full_name, [firstName, lastName].filter(Boolean).join(" "));
+  const email = firstNonEmptyValue(campaign.commanditaireEmail, campaign.commanditaire_email, campaign.referentEmail, campaign.referent_email, campaign.contactEmail, campaign.contact_email, communication.commanditaireEmail, communication.commanditaire_email, param.commanditaireEmail, param.commanditaire_email, d.commanditaireEmail, d.commanditaire_email, payload.commanditaireEmail, payload.commanditaire_email, state.commanditaireEmail, state.commanditaire_email, clientInfo.email, clientInfo.mail);
+  return { name, email };
+}
+
 function getPackUpgradeRequestRecipients(row, adminEmail) {
+  const data = row.data && typeof row.data === "object" ? row.data : {};
+  const commanditaire = extractPackProjectCommanditaire(data);
   const clientName = row.organization_name || row.user_company_name || "Client sans nom";
   const requesterName =
     row.contact_name ||
+    commanditaire.name ||
     `${row.user_first_name || ""} ${row.user_last_name || ""}`.trim() ||
     row.user_email ||
     "—";
-  const cc = uniqueEmails(row.contact_email, row.user_email, row.partner_email);
+  const requesterEmail = row.contact_email || commanditaire.email || row.user_email || "";
+  const clientRecipients = uniqueEmails(row.contact_email, commanditaire.email, row.user_email, row.partner_email);
 
   return {
-    to: adminEmail || DEFAULT_ADMIN_EMAIL,
-    cc: cc.join(","),
+    internalTo: adminEmail || DEFAULT_ADMIN_EMAIL,
+    clientTo: clientRecipients[0] || "",
+    clientCc: clientRecipients.slice(1).join(","),
     clientName,
     requesterName,
-    requesterEmail: row.contact_email || row.user_email || ""
+    requesterEmail,
+    commanditaireName: commanditaire.name,
+    commanditaireEmail: commanditaire.email
   };
 }
 
-function buildPackUpgradeRequestEmail({ row, request, recipient }) {
+function buildPackUpgradeInternalEmail({ row, request, recipient }) {
   const title = row.display_title || row.title || "Autodiagnostic sans titre";
   const currentQuota = Number(request.currentQuota ?? row.organization_passations_quota ?? 0);
   const currentUsed = Number(request.currentUsed ?? row.organization_passations_used ?? 0);
@@ -142,7 +222,7 @@ function buildPackUpgradeRequestEmail({ row, request, recipient }) {
   const totalAfter = request.unlimited
     ? "Illimité"
     : Number(request.totalAfter || 0).toLocaleString("fr-FR");
-  const projectUrl = row.id ? `${row.frontend_url || "https://shiftstudio.intotheshift.io"}/client-folder.html?projectId=${encodeURIComponent(row.id)}` : "";
+  const projectUrl = `${row.frontend_url || "https://shiftstudio.intotheshift.io"}/admin.html#organizations`;
 
   return {
     subject: `Demande de devis pack — ${recipient.clientName}`,
@@ -159,10 +239,11 @@ Quota actuel : ${currentQuota.toLocaleString("fr-FR")}
 Passations utilisées : ${currentUsed.toLocaleString("fr-FR")}
 Total après validation : ${totalAfter}
 Demandeur : ${recipient.requesterName}${recipient.requesterEmail ? ` <${recipient.requesterEmail}>` : ""}
-${projectUrl ? `
-Accès dossier/projet : ${projectUrl}` : ""}
 
-Action recommandée : créer ou envoyer le devis dans HubSpot, puis valider la recharge dans le dossier client Shift Studio.
+Accès admin :
+${projectUrl}
+
+Action interne : créer ou envoyer le devis dans HubSpot, puis valider la recharge dans Admin > Cockpit clients.
 
 L’équipe Into The Shift`,
     html:
@@ -180,8 +261,50 @@ L’équipe Into The Shift`,
       <strong>Total après validation :</strong> ${escapeHtml(String(totalAfter))}<br>
       <strong>Demandeur :</strong> ${escapeHtml(recipient.requesterName)}${recipient.requesterEmail ? ` — ${escapeHtml(recipient.requesterEmail)}` : ""}</p>
     </div>
-    ${projectUrl ? `<p style="margin:22px 0 10px"><a href="${escapeHtml(projectUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Ouvrir le dossier client</a></p>` : ""}
-    <p><strong>Action recommandée :</strong> créer ou envoyer le devis dans HubSpot, puis valider la recharge dans le dossier client Shift Studio.</p>
+    <p style="margin:22px 0 10px"><a href="${escapeHtml(projectUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Ouvrir l’admin</a></p>
+    <p><strong>Action interne :</strong> créer ou envoyer le devis dans HubSpot, puis valider la recharge dans <strong>Admin &gt; Cockpit clients</strong>.</p>
+    <p>L’équipe Into The Shift</p>
+  </div>
+</div>`
+  };
+}
+
+function buildPackUpgradeClientEmail({ row, request, recipient }) {
+  const title = row.display_title || row.title || "votre autodiagnostic";
+  const requestedPack = formatPackChoiceLabel(request);
+  const hello = recipient.requesterName && recipient.requesterName !== "—" ? recipient.requesterName : "";
+  const mesAdUrl = `${row.frontend_url || "https://shiftstudio.intotheshift.io"}/mes-autodiagnostics.html`;
+
+  return {
+    subject: `Votre demande de pack complémentaire a bien été reçue — ${recipient.clientName}`,
+    text:
+`Bonjour ${hello},
+
+Nous avons bien reçu votre demande de pack complémentaire pour l’autodiagnostic "${title}".
+
+Récapitulatif
+- Client : ${recipient.clientName}
+- Pack demandé : ${requestedPack}
+
+Notre équipe va revenir vers vous avec les éléments commerciaux nécessaires. La recharge sera activée après validation.
+
+Accéder à votre espace Shift Studio :
+${mesAdUrl}
+
+L’équipe Into The Shift`,
+    html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
+    <p>Bonjour ${escapeHtml(hello)},</p>
+    <p>Nous avons bien reçu votre <strong>demande de pack complémentaire</strong> pour l’autodiagnostic <strong>${escapeHtml(title)}</strong>.</p>
+    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
+      <p style="margin:0"><strong>Client :</strong> ${escapeHtml(recipient.clientName)}<br>
+      <strong>Pack demandé :</strong> ${escapeHtml(requestedPack)}</p>
+    </div>
+    <p>Notre équipe va revenir vers vous avec les éléments commerciaux nécessaires. La recharge sera activée après validation.</p>
+    <p style="margin:22px 0 10px">
+      <a href="${escapeHtml(mesAdUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder à mes autodiagnostics</a>
+    </p>
     <p>L’équipe Into The Shift</p>
   </div>
 </div>`
@@ -238,23 +361,34 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
       }
 
       const recipient = getPackAlertRecipients(row, adminEmail);
-      if (!recipient.to) {
+      if (!recipient.internalTo) {
         skipped.push({ id: row.id, type: status.type, reason: "NO_ADMIN_RECIPIENT" });
         continue;
       }
 
-      const mail = buildPackAlertEmail({ row, status, recipient });
-      const mailResult = await sendTransactionalEmail({
-        to: recipient.to,
-        cc: recipient.cc || undefined,
-        subject: mail.subject,
-        text: mail.text,
-        html: mail.html
+      const internalMail = buildPackAlertInternalEmail({ row, status, recipient });
+      const internalMailResult = await sendTransactionalEmail({
+        to: recipient.internalTo,
+        subject: internalMail.subject,
+        text: internalMail.text,
+        html: internalMail.html
       });
 
-      if (!mailResult.sent) {
-        skipped.push({ id: row.id, type: status.type, to: recipient.to, reason: mailResult.reason || "SEND_FAILED" });
+      if (!internalMailResult.sent) {
+        skipped.push({ id: row.id, type: status.type, to: recipient.internalTo, reason: internalMailResult.reason || "SEND_FAILED" });
         continue;
+      }
+
+      let clientMailResult = { sent: false, reason: "NO_CLIENT_RECIPIENT" };
+      if (recipient.clientTo) {
+        const clientMail = buildPackAlertClientEmail({ row, status, recipient });
+        clientMailResult = await sendTransactionalEmail({
+          to: recipient.clientTo,
+          cc: recipient.clientCc || undefined,
+          subject: clientMail.subject,
+          text: clientMail.text,
+          html: clientMail.html
+        });
       }
 
       const column = status.type === "empty"
@@ -264,98 +398,139 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
           : "pack_alert_low_sent_at";
 
       await pool.query(`UPDATE organizations SET ${column} = NOW() WHERE id = $1`, [row.id]);
-      sent.push({ id: row.id, organizationName: row.name, type: status.type, to: recipient.to, cc: recipient.cc || "", remaining: status.remaining, quota: status.quota });
+      sent.push({ id: row.id, organizationName: row.name, type: status.type, internalTo: recipient.internalTo, clientTo: recipient.clientTo || "", clientCc: recipient.clientCc || "", clientEmailSent: clientMailResult.sent === true, remaining: status.remaining, quota: status.quota });
     }
 
     return { sent, skipped };
   }
 
   async function sendPackUpgradeRequestEmail(projectId) {
-    const result = await pool.query(`
-      SELECT
-        p.id,
-        p.title,
-        p.data,
-        COALESCE(
-          NULLIF(p.data->'parametrage'->>'titre_repondants', ''),
-          NULLIF(p.data->'parametrage'->>'titreRespondants', ''),
-          NULLIF(p.data->'parametrage'->>'titre_visible_repondants', ''),
-          NULLIF(p.data->'parametrage'->>'titreVisibleRepondants', ''),
-          NULLIF(p.data->'parametrage'->>'titre', ''),
-          p.title
-        ) AS display_title,
-        o.name AS organization_name,
-        o.contact_name,
-        o.contact_email,
-        o.passations_pack AS organization_passations_pack,
-        o.passations_quota AS organization_passations_quota,
-        o.passations_used AS organization_passations_used,
-        client.email AS user_email,
-        client.first_name AS user_first_name,
-        client.last_name AS user_last_name,
-        client.company_name AS user_company_name,
-        partner.email AS partner_email
-      FROM projects p
-      LEFT JOIN organizations o ON o.id = p.organization_id
-      LEFT JOIN users client ON client.id = p.user_id
-      LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
-      WHERE p.id = $1
-      LIMIT 1
-    `, [projectId]);
+    const client = await pool.connect();
 
-    const row = result.rows[0];
-    if (!row) return { sent: false, reason: "PROJECT_NOT_FOUND" };
+    try {
+      await client.query("BEGIN");
 
-    const data = row.data && typeof row.data === "object" ? row.data : {};
-    const param = data.parametrage && typeof data.parametrage === "object" ? data.parametrage : {};
-    const alreadySentAt = data.pack_upgrade_email_sent_at || data.packUpgradeEmailSentAt || param.pack_upgrade_email_sent_at || param.packUpgradeEmailSentAt;
-    if (alreadySentAt) return { sent: false, reason: "ALREADY_SENT" };
+      const result = await client.query(`
+        SELECT
+          p.id,
+          p.title,
+          p.data,
+          COALESCE(
+            NULLIF(p.data->'parametrage'->>'titre_repondants', ''),
+            NULLIF(p.data->'parametrage'->>'titreRespondants', ''),
+            NULLIF(p.data->'parametrage'->>'titre_visible_repondants', ''),
+            NULLIF(p.data->'parametrage'->>'titreVisibleRepondants', ''),
+            NULLIF(p.data->'parametrage'->>'titre', ''),
+            p.title
+          ) AS display_title,
+          o.name AS organization_name,
+          o.contact_name,
+          o.contact_email,
+          o.passations_pack AS organization_passations_pack,
+          o.passations_quota AS organization_passations_quota,
+          o.passations_used AS organization_passations_used,
+          client_user.email AS user_email,
+          client_user.first_name AS user_first_name,
+          client_user.last_name AS user_last_name,
+          client_user.company_name AS user_company_name,
+          partner.email AS partner_email
+        FROM projects p
+        LEFT JOIN organizations o ON o.id = p.organization_id
+        LEFT JOIN users client_user ON client_user.id = p.user_id
+        LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+        WHERE p.id = $1
+        FOR UPDATE OF p
+      `, [projectId]);
 
-    const requested = data.pack_upgrade_requested === true || data.packUpgradeRequested === true || param.pack_upgrade_requested === true || param.packUpgradeRequested === true;
-    const status = String(data.pack_upgrade_status || data.packUpgradeStatus || param.pack_upgrade_status || param.packUpgradeStatus || "").toLowerCase();
-    if (!requested || status !== "pending") return { sent: false, reason: "NO_PENDING_REQUEST" };
-
-    const request = {
-      requested: true,
-      status: "pending",
-      choice: data.pack_upgrade_choice || data.packUpgradeChoice || param.pack_upgrade_choice || param.packUpgradeChoice || "",
-      amount: data.pack_upgrade_amount ?? data.packUpgradeAmount ?? param.pack_upgrade_amount ?? param.packUpgradeAmount ?? null,
-      totalAfter: data.pack_upgrade_total_after ?? data.packUpgradeTotalAfter ?? param.pack_upgrade_total_after ?? param.packUpgradeTotalAfter ?? null,
-      unlimited: data.pack_upgrade_unlimited === true || data.packUpgradeUnlimited === true || param.pack_upgrade_unlimited === true || param.packUpgradeUnlimited === true,
-      currentQuota: row.organization_passations_quota,
-      currentUsed: row.organization_passations_used,
-      currentRemaining: String(row.organization_passations_pack || "").toLowerCase() === "illimite" ? null : Math.max(0, Number(row.organization_passations_quota || 0) - Number(row.organization_passations_used || 0))
-    };
-
-    const recipient = getPackUpgradeRequestRecipients(row, adminEmail);
-    if (!recipient.to) return { sent: false, reason: "NO_ADMIN_RECIPIENT" };
-
-    const mail = buildPackUpgradeRequestEmail({ row: { ...row, frontend_url: process.env.FRONTEND_URL || "https://shiftstudio.intotheshift.io" }, request, recipient });
-    const mailResult = await sendTransactionalEmail({
-      to: recipient.to,
-      cc: recipient.cc || undefined,
-      subject: mail.subject,
-      text: mail.text,
-      html: mail.html
-    });
-
-    if (!mailResult.sent) return { ...mailResult, to: recipient.to, cc: recipient.cc || "" };
-
-    const sentAt = new Date().toISOString();
-    const nextData = {
-      ...data,
-      pack_upgrade_email_sent_at: sentAt,
-      packUpgradeEmailSentAt: sentAt,
-      parametrage: {
-        ...param,
-        pack_upgrade_email_sent_at: sentAt,
-        packUpgradeEmailSentAt: sentAt
+      const row = result.rows[0];
+      if (!row) {
+        await client.query("ROLLBACK");
+        return { sent: false, reason: "PROJECT_NOT_FOUND" };
       }
-    };
 
-    await pool.query(`UPDATE projects SET data = $1::jsonb, updated_at = NOW() WHERE id = $2`, [JSON.stringify(nextData), projectId]);
+      const data = row.data && typeof row.data === "object" ? row.data : {};
+      const param = data.parametrage && typeof data.parametrage === "object" ? data.parametrage : {};
+      const alreadySentAt = data.pack_upgrade_email_sent_at || data.packUpgradeEmailSentAt || param.pack_upgrade_email_sent_at || param.packUpgradeEmailSentAt;
+      if (alreadySentAt) {
+        await client.query("COMMIT");
+        return { sent: false, reason: "ALREADY_SENT" };
+      }
 
-    return { sent: true, to: recipient.to, cc: recipient.cc || "" };
+      const requested = data.pack_upgrade_requested === true || data.packUpgradeRequested === true || param.pack_upgrade_requested === true || param.packUpgradeRequested === true;
+      const status = String(data.pack_upgrade_status || data.packUpgradeStatus || param.pack_upgrade_status || param.packUpgradeStatus || "").toLowerCase();
+      if (!requested || status !== "pending") {
+        await client.query("ROLLBACK");
+        return { sent: false, reason: "NO_PENDING_REQUEST" };
+      }
+
+      const request = {
+        requested: true,
+        status: "pending",
+        choice: data.pack_upgrade_choice || data.packUpgradeChoice || param.pack_upgrade_choice || param.packUpgradeChoice || "",
+        amount: data.pack_upgrade_amount ?? data.packUpgradeAmount ?? param.pack_upgrade_amount ?? param.packUpgradeAmount ?? null,
+        totalAfter: data.pack_upgrade_total_after ?? data.packUpgradeTotalAfter ?? param.pack_upgrade_total_after ?? param.packUpgradeTotalAfter ?? null,
+        unlimited: data.pack_upgrade_unlimited === true || data.packUpgradeUnlimited === true || param.pack_upgrade_unlimited === true || param.packUpgradeUnlimited === true,
+        currentQuota: row.organization_passations_quota,
+        currentUsed: row.organization_passations_used,
+        currentRemaining: String(row.organization_passations_pack || "").toLowerCase() === "illimite" ? null : Math.max(0, Number(row.organization_passations_quota || 0) - Number(row.organization_passations_used || 0))
+      };
+
+      const recipient = getPackUpgradeRequestRecipients(row, adminEmail);
+      if (!recipient.internalTo) {
+        await client.query("ROLLBACK");
+        return { sent: false, reason: "NO_ADMIN_RECIPIENT" };
+      }
+
+      const sentAt = new Date().toISOString();
+      const nextData = {
+        ...data,
+        pack_upgrade_email_sent_at: sentAt,
+        packUpgradeEmailSentAt: sentAt,
+        parametrage: {
+          ...param,
+          pack_upgrade_email_sent_at: sentAt,
+          packUpgradeEmailSentAt: sentAt
+        }
+      };
+
+      await client.query(`UPDATE projects SET data = $1::jsonb, updated_at = NOW() WHERE id = $2`, [JSON.stringify(nextData), projectId]);
+      await client.query("COMMIT");
+
+      const rowWithFrontend = { ...row, frontend_url: process.env.FRONTEND_URL || "https://shiftstudio.intotheshift.io" };
+      const internalMail = buildPackUpgradeInternalEmail({ row: rowWithFrontend, request, recipient });
+      const internalMailResult = await sendTransactionalEmail({
+        to: recipient.internalTo,
+        subject: internalMail.subject,
+        text: internalMail.text,
+        html: internalMail.html
+      });
+
+      let clientMailResult = { sent: false, reason: "NO_CLIENT_RECIPIENT" };
+      if (recipient.clientTo) {
+        const clientMail = buildPackUpgradeClientEmail({ row: rowWithFrontend, request, recipient });
+        clientMailResult = await sendTransactionalEmail({
+          to: recipient.clientTo,
+          cc: recipient.clientCc || undefined,
+          subject: clientMail.subject,
+          text: clientMail.text,
+          html: clientMail.html
+        });
+      }
+
+      return {
+        sent: internalMailResult.sent === true,
+        internalTo: recipient.internalTo,
+        clientTo: recipient.clientTo || "",
+        clientCc: recipient.clientCc || "",
+        clientEmailSent: clientMailResult.sent === true,
+        reason: internalMailResult.reason || ""
+      };
+    } catch (err) {
+      try { await client.query("ROLLBACK"); } catch (_) {}
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async function runPackAlerts() {
