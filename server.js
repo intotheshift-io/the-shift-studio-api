@@ -1022,7 +1022,7 @@ L’équipe Into The Shift`,
   <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
     <p>Bonjour ${escapeHtml(hello)},</p>
     <p>Votre autodiagnostic <strong>${escapeHtml(title)}</strong> est maintenant publié sur <strong>Shift Studio</strong>.</p>
-    <p>La campagne pourra être diffusée à la date de lancement que vous avez déterminée auprès des répondants.</p>
+    <p>La campagne pourra être diffusée à la date de lancement que vous avez déterminée, avant cela votre lien n'est pas actif.</p>
     <p>Vous retrouverez dans votre espace :</p>
     <ul>
       <li>le lien de passation,</li>
