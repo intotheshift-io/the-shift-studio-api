@@ -292,6 +292,9 @@ Nouvelle date de clôture : ${newEndDate}
 
 Cette reprogrammation remplace la précédente configuration de diffusion.
 
+Accéder à Mes Autodiagnostics :
+https://shiftstudio.intotheshift.io/mes-autodiagnostics.html
+
 L’équipe Into The Shift`,
     html: `
       <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
@@ -302,6 +305,12 @@ L’équipe Into The Shift`,
           <strong>Nouvelle date de clôture :</strong> ${escapeHtml(newEndDate)}
         </p>
         <p>Cette reprogrammation remplace la précédente configuration de diffusion.</p>
+        <p style="margin:22px 0 10px">
+          <a href="https://shiftstudio.intotheshift.io/mes-autodiagnostics.html"
+             style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">
+             Accéder à Mes Autodiagnostics
+          </a>
+        </p>
         <p>L’équipe Into The Shift</p>
       </div>
     `
