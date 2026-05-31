@@ -739,7 +739,6 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
     };
   }
 
-  return { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendTransmissionEmails, sendExtensionEmails };
+  return { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendTransmissionEmails, sendExtensionEmails, sendReprogrammingEmails };
 }
 
-module.exports.sendReprogrammingEmails = sendReprogrammingEmails;

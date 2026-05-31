@@ -1746,6 +1746,7 @@ app.get("/debug-version", (req, res) => {
     hasPackUpgradeApprovedEmail: true,
     hasTransmissionEmailTemplatesInCampaignAlerts: true,
     hasCampaignExtensionEmails: true,
+    hasCampaignReprogrammingEmails: true,
     hasOrganizationUsersRoute: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
@@ -4960,9 +4961,23 @@ app.post("/api/transmissions/submit", auth, async (req, res) => {
       normalizedPayload.extended === true ||
       normalizedPayload.isExtended === true;
 
+    const isReprogrammingTransmission =
+      payloadForEmail.isReprogramming === true ||
+      payloadForEmail.reprogramming === true ||
+      payloadForEmail.isReprogrammingTransmission === true ||
+      payloadForEmail.reprogrammingRequest === true ||
+      normalizedPayload.isReprogramming === true ||
+      normalizedPayload.reprogramming === true ||
+      normalizedPayload.isReprogrammingTransmission === true ||
+      normalizedPayload.reprogrammingRequest === true ||
+      normalizedPayload.transmissionType === "reprogramming" ||
+      payloadForEmail.transmissionType === "reprogramming";
+
     const transmissionEmail = isExtensionTransmission && typeof sendExtensionEmails === "function"
       ? await sendExtensionEmails(payloadForEmail)
-      : await sendTransmissionEmails(payloadForEmail);
+      : (isReprogrammingTransmission && typeof sendReprogrammingEmails === "function")
+        ? await sendReprogrammingEmails(payloadForEmail)
+        : await sendTransmissionEmails(payloadForEmail);
 
     if (!transmissionEmail.ok) {
       const statusCode = transmissionEmail.error === "Email client manquant" || transmissionEmail.error === "Fichier Excel manquant" ? 400 : 500;
