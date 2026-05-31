@@ -1514,7 +1514,7 @@ const packAlerts = createPackAlerts({
   sendTransactionalEmail,
   adminEmail: process.env.ALERT_ADMIN_EMAIL || "contact@intotheshift.io"
 });
-const { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail } = packAlerts;
+const { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail } = packAlerts;
 
 async function runOperationalAlerts() {
   const campaign = await runCampaignAlerts();
@@ -3919,10 +3919,10 @@ app.patch("/api/admin/organizations/:id/pack-upgrade", auth, requireAdmin, async
 
     await client.query("COMMIT");
 
-    let packUpgradeApprovedEmail = { sent: false, reason: "NO_SOURCE_PROJECT" };
-    if (org.pack_upgrade_source_project_id && typeof sendPackUpgradeApprovedEmail === "function") {
+    let packUpgradeApprovedEmail = { sent: false, reason: "NOT_TRIGGERED" };
+    if (typeof sendAccountPackUpgradeApprovedEmail === "function") {
       try {
-        packUpgradeApprovedEmail = await sendPackUpgradeApprovedEmail(org.pack_upgrade_source_project_id);
+        packUpgradeApprovedEmail = await sendAccountPackUpgradeApprovedEmail(id);
       } catch (emailErr) {
         console.error("Erreur notification recharge pack validée", emailErr);
         packUpgradeApprovedEmail = { sent: false, reason: "SEND_FAILED" };

@@ -806,10 +806,101 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     }
   }
 
+
+  async function sendAccountPackUpgradeApprovedEmail(organizationId) {
+    const result = await pool.query(`
+      SELECT
+        o.id AS organization_id,
+        o.name AS organization_name,
+        o.contact_name,
+        o.contact_email,
+        o.passations_pack AS organization_passations_pack,
+        o.passations_quota AS organization_passations_quota,
+        o.passations_used AS organization_passations_used,
+        o.pack_upgrade_requested,
+        o.pack_upgrade_status,
+        o.pack_upgrade_choice,
+        o.pack_upgrade_amount,
+        o.pack_upgrade_total_after,
+        o.pack_upgrade_unlimited,
+        o.pack_upgrade_requested_by_email,
+        o.pack_upgrade_approved_email_sent_at,
+        requester.email AS user_email,
+        requester.first_name AS user_first_name,
+        requester.last_name AS user_last_name,
+        requester.company_name AS user_company_name,
+        partner.email AS partner_email
+      FROM organizations o
+      LEFT JOIN users requester ON requester.id = o.pack_upgrade_requested_by
+      LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+      WHERE o.id = $1
+      LIMIT 1
+    `, [organizationId]);
+
+    const row = result.rows[0];
+    if (!row) return { sent: false, reason: 'ORGANIZATION_NOT_FOUND' };
+    if (row.pack_upgrade_approved_email_sent_at) return { sent: false, reason: 'ALREADY_SENT' };
+
+    const request = {
+      requested: row.pack_upgrade_requested === true,
+      status: String(row.pack_upgrade_status || '').toLowerCase(),
+      choice: row.pack_upgrade_choice || '',
+      amount: row.pack_upgrade_amount,
+      totalAfter: row.pack_upgrade_total_after,
+      unlimited: row.pack_upgrade_unlimited === true
+    };
+
+    if (!request.requested || request.status !== 'approved') {
+      return { sent: false, reason: 'NO_APPROVED_REQUEST' };
+    }
+
+    const mailRow = {
+      id: null,
+      title: 'Recharge de pack validée',
+      display_title: 'Recharge de pack',
+      data: {},
+      organization_name: row.organization_name,
+      contact_name: row.contact_name,
+      contact_email: row.contact_email,
+      organization_passations_pack: row.organization_passations_pack,
+      organization_passations_quota: row.organization_passations_quota,
+      organization_passations_used: row.organization_passations_used,
+      user_email: row.user_email || row.pack_upgrade_requested_by_email || row.contact_email,
+      user_first_name: row.user_first_name,
+      user_last_name: row.user_last_name,
+      user_company_name: row.user_company_name,
+      partner_email: row.partner_email,
+      frontend_url: process.env.FRONTEND_URL || 'https://shiftstudio.intotheshift.io'
+    };
+
+    const recipient = getPackUpgradeRequestRecipients(mailRow, adminEmail);
+    if (!recipient.clientTo) return { sent: false, reason: 'NO_CLIENT_RECIPIENT' };
+
+    const clientMail = buildPackUpgradeApprovedClientEmail({ row: mailRow, request, recipient });
+    const clientMailResult = await sendTransactionalEmail({
+      to: recipient.clientTo,
+      cc: recipient.clientCc || undefined,
+      subject: clientMail.subject,
+      text: clientMail.text,
+      html: clientMail.html
+    });
+
+    if (clientMailResult.sent) {
+      await pool.query(`UPDATE organizations SET pack_upgrade_approved_email_sent_at = NOW() WHERE id = $1`, [organizationId]);
+    }
+
+    return {
+      sent: clientMailResult.sent === true,
+      clientTo: recipient.clientTo || '',
+      clientCc: recipient.clientCc || '',
+      reason: clientMailResult.reason || ''
+    };
+  }
+
   async function runPackAlerts() {
     const pack = await processPackAlerts({ mode: "all" });
     return { pack, totalSent: pack.sent.length, totalSkipped: pack.skipped.length };
   }
 
-  return { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail };
+  return { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail };
 }
