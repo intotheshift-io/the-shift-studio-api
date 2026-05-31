@@ -1514,7 +1514,7 @@ const packAlerts = createPackAlerts({
   sendTransactionalEmail,
   adminEmail: process.env.ALERT_ADMIN_EMAIL || "contact@intotheshift.io"
 });
-const { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail } = packAlerts;
+const { processPackAlerts, runPackAlerts, sendPackAlertForOrganization, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail } = packAlerts;
 
 async function runOperationalAlerts() {
   const campaign = await runCampaignAlerts();
@@ -1736,6 +1736,7 @@ app.get("/debug-version", (req, res) => {
     hasPackUpgradeValidation: true,
     hasCampaignAlertsModule: true,
     hasPackAlerts: true,
+    hasImmediateManualPackAlerts: true,
     hasOperationalAlerts: true,
     hasCommunicationAssets: true,
     hasProjectCommanditaireEmails: true,
@@ -3314,7 +3315,17 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
       return res.status(404).json({ error: "Organisation introuvable" });
     }
 
-    res.json({ organization: formatOrganization(result.rows[0]) });
+    let packAlert = { sent: false, reason: "NOT_TRIGGERED" };
+    if (typeof sendPackAlertForOrganization === "function") {
+      try {
+        packAlert = await sendPackAlertForOrganization(id);
+      } catch (alertErr) {
+        console.error("Erreur alerte pack après mise à jour manuelle", alertErr);
+        packAlert = { sent: false, reason: "SEND_FAILED" };
+      }
+    }
+
+    res.json({ organization: formatOrganization(result.rows[0]), packAlert });
   } catch (err) {
     console.error("Erreur mise à jour passations organisation", err);
     res.status(500).json({ error: "Erreur mise à jour passations client final" });

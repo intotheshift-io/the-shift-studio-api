@@ -400,60 +400,130 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     `);
   }
 
+  async function getSinglePackAlertRow(organizationId) {
+    return pool.query(`
+      SELECT
+        o.id,
+        o.name,
+        o.contact_name,
+        o.contact_email,
+        o.passations_pack,
+        o.passations_quota,
+        o.passations_used,
+        o.pack_alert_low_sent_at,
+        o.pack_alert_critical_sent_at,
+        o.pack_alert_empty_sent_at,
+        creator.email AS creator_email,
+        creator.first_name AS creator_first_name,
+        creator.last_name AS creator_last_name,
+        creator.company_name AS creator_company_name,
+        creator.role AS creator_role,
+        partner.email AS partner_email,
+        COALESCE(array_agg(DISTINCT ou_user.email) FILTER (WHERE ou_user.email IS NOT NULL), '{}') AS organization_user_emails
+      FROM organizations o
+      LEFT JOIN users creator ON creator.id = o.created_by
+      LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+      LEFT JOIN organization_users ou ON ou.organization_id = o.id
+      LEFT JOIN users ou_user ON ou_user.id = ou.user_id AND COALESCE(ou_user.status, 'active') = 'active'
+      WHERE o.id = $1
+        AND o.type = 'client'
+        AND COALESCE(LOWER(o.passations_pack), '') <> 'illimite'
+        AND COALESCE(o.passations_quota, 0) > 0
+      GROUP BY o.id, creator.id, partner.id
+      LIMIT 1
+    `, [organizationId]);
+  }
+
+  async function sendPackAlertForRow(row, { mode = "all" } = {}) {
+    const safeMode = String(mode || "all").toLowerCase();
+    const status = getPackStatus(row);
+
+    if (status.type === "ok") {
+      return { sent: false, skipped: true, id: row.id, type: status.type, reason: "PACK_OK", remaining: status.remaining, quota: status.quota };
+    }
+
+    if (safeMode !== "all" && safeMode !== status.type) {
+      return { sent: false, skipped: true, id: row.id, type: status.type, reason: "MODE_MISMATCH", remaining: status.remaining, quota: status.quota };
+    }
+
+    if (!shouldSendPackAlert(row, status)) {
+      return { sent: false, skipped: true, id: row.id, type: status.type, reason: "ALREADY_SENT", remaining: status.remaining, quota: status.quota };
+    }
+
+    const recipient = getPackAlertRecipients(row, adminEmail);
+    if (!recipient.internalTo) {
+      return { sent: false, skipped: true, id: row.id, type: status.type, reason: "NO_ADMIN_RECIPIENT", remaining: status.remaining, quota: status.quota };
+    }
+
+    const internalMail = buildPackAlertInternalEmail({ row, status, recipient });
+    const internalMailResult = await sendTransactionalEmail({
+      to: recipient.internalTo,
+      subject: internalMail.subject,
+      text: internalMail.text,
+      html: internalMail.html
+    });
+
+    if (!internalMailResult.sent) {
+      return { sent: false, skipped: true, id: row.id, type: status.type, to: recipient.internalTo, reason: internalMailResult.reason || "SEND_FAILED", remaining: status.remaining, quota: status.quota };
+    }
+
+    let clientMailResult = { sent: false, reason: "NO_CLIENT_RECIPIENT" };
+    if (recipient.clientTo) {
+      const clientMail = buildPackAlertClientEmail({ row, status, recipient });
+      clientMailResult = await sendTransactionalEmail({
+        to: recipient.clientTo,
+        cc: recipient.clientCc || undefined,
+        subject: clientMail.subject,
+        text: clientMail.text,
+        html: clientMail.html
+      });
+    }
+
+    const column = status.type === "empty"
+      ? "pack_alert_empty_sent_at"
+      : status.type === "critical"
+        ? "pack_alert_critical_sent_at"
+        : "pack_alert_low_sent_at";
+
+    await pool.query(`UPDATE organizations SET ${column} = NOW() WHERE id = $1`, [row.id]);
+
+    return {
+      sent: true,
+      id: row.id,
+      organizationName: row.name,
+      type: status.type,
+      internalTo: recipient.internalTo,
+      clientTo: recipient.clientTo || "",
+      clientCc: recipient.clientCc || "",
+      clientEmailSent: clientMailResult.sent === true,
+      remaining: status.remaining,
+      quota: status.quota
+    };
+  }
+
+  async function sendPackAlertForOrganization(organizationId, { mode = "all" } = {}) {
+    const result = await getSinglePackAlertRow(organizationId);
+    const row = result.rows[0];
+
+    if (!row) {
+      return { sent: false, skipped: true, id: organizationId, reason: "ORGANIZATION_NOT_ELIGIBLE" };
+    }
+
+    return sendPackAlertForRow(row, { mode });
+  }
+
   async function processPackAlerts({ mode = "all" } = {}) {
     const result = await getPackAlertRows();
     const sent = [];
     const skipped = [];
-    const safeMode = String(mode || "all").toLowerCase();
 
     for (const row of result.rows) {
-      const status = getPackStatus(row);
-      if (status.type === "ok") continue;
-      if (safeMode !== "all" && safeMode !== status.type) continue;
-      if (!shouldSendPackAlert(row, status)) {
-        skipped.push({ id: row.id, type: status.type, reason: "ALREADY_SENT" });
-        continue;
+      const alertResult = await sendPackAlertForRow(row, { mode });
+      if (alertResult.sent) {
+        sent.push(alertResult);
+      } else if (alertResult.skipped) {
+        skipped.push(alertResult);
       }
-
-      const recipient = getPackAlertRecipients(row, adminEmail);
-      if (!recipient.internalTo) {
-        skipped.push({ id: row.id, type: status.type, reason: "NO_ADMIN_RECIPIENT" });
-        continue;
-      }
-
-      const internalMail = buildPackAlertInternalEmail({ row, status, recipient });
-      const internalMailResult = await sendTransactionalEmail({
-        to: recipient.internalTo,
-        subject: internalMail.subject,
-        text: internalMail.text,
-        html: internalMail.html
-      });
-
-      if (!internalMailResult.sent) {
-        skipped.push({ id: row.id, type: status.type, to: recipient.internalTo, reason: internalMailResult.reason || "SEND_FAILED" });
-        continue;
-      }
-
-      let clientMailResult = { sent: false, reason: "NO_CLIENT_RECIPIENT" };
-      if (recipient.clientTo) {
-        const clientMail = buildPackAlertClientEmail({ row, status, recipient });
-        clientMailResult = await sendTransactionalEmail({
-          to: recipient.clientTo,
-          cc: recipient.clientCc || undefined,
-          subject: clientMail.subject,
-          text: clientMail.text,
-          html: clientMail.html
-        });
-      }
-
-      const column = status.type === "empty"
-        ? "pack_alert_empty_sent_at"
-        : status.type === "critical"
-          ? "pack_alert_critical_sent_at"
-          : "pack_alert_low_sent_at";
-
-      await pool.query(`UPDATE organizations SET ${column} = NOW() WHERE id = $1`, [row.id]);
-      sent.push({ id: row.id, organizationName: row.name, type: status.type, internalTo: recipient.internalTo, clientTo: recipient.clientTo || "", clientCc: recipient.clientCc || "", clientEmailSent: clientMailResult.sent === true, remaining: status.remaining, quota: status.quota });
     }
 
     return { sent, skipped };
@@ -902,5 +972,5 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     return { pack, totalSent: pack.sent.length, totalSkipped: pack.skipped.length };
   }
 
-  return { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail };
+  return { processPackAlerts, runPackAlerts, sendPackAlertForOrganization, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail };
 }
