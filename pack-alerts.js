@@ -318,6 +318,54 @@ L’équipe Into The Shift`,
   };
 }
 
+
+function buildPackUpgradeApprovedClientEmail({ row, request, recipient }) {
+  const requestedPack = formatPackChoiceLabel(request);
+  const currentQuota = Number(row.organization_passations_quota || 0);
+  const currentUsed = Number(row.organization_passations_used || 0);
+  const isUnlimited = String(row.organization_passations_pack || "").toLowerCase() === "illimite";
+  const currentRemaining = isUnlimited
+    ? "Illimité"
+    : `${Math.max(0, currentQuota - currentUsed).toLocaleString("fr-FR")} passations restantes`;
+  const hello = recipient.requesterName && recipient.requesterName !== "—" ? recipient.requesterName : "";
+  const dashboardUrl = makeFrontendUrl("/mes-autodiagnostics.html");
+
+  return {
+    subject: `Votre demande de recharge a été validée — ${recipient.clientName}`,
+    text:
+`Bonjour ${hello},
+
+Votre demande de recharge de pack a bien été validée par Into The Shift.
+
+Pack demandé : ${requestedPack}
+Nouveau quota : ${isUnlimited ? "Illimité" : currentQuota.toLocaleString("fr-FR")}
+Solde actuel : ${currentRemaining}
+
+Nous allons vous envoyer un devis.
+
+Accéder à votre espace Shift Studio :
+${dashboardUrl}
+
+L’équipe Into The Shift`,
+    html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
+    <p>Bonjour ${escapeHtml(hello)},</p>
+    <p>Votre demande de recharge de pack a bien été validée par <strong>Into The Shift</strong>.</p>
+    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
+      <p style="margin:0"><strong>Pack demandé :</strong> ${escapeHtml(requestedPack)}<br>
+      <strong>Nouveau quota :</strong> ${isUnlimited ? "Illimité" : escapeHtml(currentQuota.toLocaleString("fr-FR"))}<br>
+      <strong>Solde actuel :</strong> ${escapeHtml(currentRemaining)}</p>
+    </div>
+    <p>Nous allons vous envoyer un devis.</p>
+    <p style="margin:22px 0 10px"><a href="${escapeHtml(dashboardUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder à mon espace Shift Studio</a></p>
+    <p>L’équipe Into The Shift</p>
+  </div>
+</div>`
+  };
+}
+
+
 export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DEFAULT_ADMIN_EMAIL }) {
   async function getPackAlertRows() {
     return pool.query(`
@@ -540,10 +588,120 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     }
   }
 
+  async function sendPackUpgradeApprovedEmail(projectId) {
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const result = await client.query(`
+        SELECT
+          p.id,
+          p.title,
+          p.data,
+          COALESCE(
+            NULLIF(p.data->'parametrage'->>'titre_repondants', ''),
+            NULLIF(p.data->'parametrage'->>'titreRespondants', ''),
+            NULLIF(p.data->'parametrage'->>'titre_visible_repondants', ''),
+            NULLIF(p.data->'parametrage'->>'titreVisibleRepondants', ''),
+            NULLIF(p.data->'parametrage'->>'titre', ''),
+            p.title
+          ) AS display_title,
+          o.name AS organization_name,
+          o.contact_name,
+          o.contact_email,
+          o.passations_pack AS organization_passations_pack,
+          o.passations_quota AS organization_passations_quota,
+          o.passations_used AS organization_passations_used,
+          client_user.email AS user_email,
+          client_user.first_name AS user_first_name,
+          client_user.last_name AS user_last_name,
+          client_user.company_name AS user_company_name,
+          partner.email AS partner_email
+        FROM projects p
+        LEFT JOIN organizations o ON o.id = p.organization_id
+        LEFT JOIN users client_user ON client_user.id = p.user_id
+        LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+        WHERE p.id = $1
+        FOR UPDATE OF p
+      `, [projectId]);
+
+      const row = result.rows[0];
+      if (!row) {
+        await client.query("ROLLBACK");
+        return { sent: false, reason: "PROJECT_NOT_FOUND" };
+      }
+
+      const data = row.data && typeof row.data === "object" ? row.data : {};
+      const param = data.parametrage && typeof data.parametrage === "object" ? data.parametrage : {};
+      const alreadySentAt = data.pack_upgrade_approved_email_sent_at || data.packUpgradeApprovedEmailSentAt || param.pack_upgrade_approved_email_sent_at || param.packUpgradeApprovedEmailSentAt;
+      if (alreadySentAt) {
+        await client.query("COMMIT");
+        return { sent: false, reason: "ALREADY_SENT" };
+      }
+
+      const request = {
+        requested: data.pack_upgrade_requested === true || data.packUpgradeRequested === true || param.pack_upgrade_requested === true || param.packUpgradeRequested === true,
+        status: String(data.pack_upgrade_status || data.packUpgradeStatus || param.pack_upgrade_status || param.packUpgradeStatus || "").toLowerCase(),
+        choice: data.pack_upgrade_choice || data.packUpgradeChoice || param.pack_upgrade_choice || param.packUpgradeChoice || "",
+        amount: data.pack_upgrade_amount ?? data.packUpgradeAmount ?? param.pack_upgrade_amount ?? param.packUpgradeAmount ?? null,
+        totalAfter: data.pack_upgrade_total_after ?? data.packUpgradeTotalAfter ?? param.pack_upgrade_total_after ?? param.packUpgradeTotalAfter ?? null,
+        unlimited: data.pack_upgrade_unlimited === true || data.packUpgradeUnlimited === true || param.pack_upgrade_unlimited === true || param.packUpgradeUnlimited === true
+      };
+
+      if (!request.requested || request.status !== "approved") {
+        await client.query("ROLLBACK");
+        return { sent: false, reason: "NO_APPROVED_REQUEST" };
+      }
+
+      const recipient = getPackUpgradeRequestRecipients(row, adminEmail);
+      if (!recipient.clientTo) {
+        await client.query("ROLLBACK");
+        return { sent: false, reason: "NO_CLIENT_RECIPIENT" };
+      }
+
+      const sentAt = new Date().toISOString();
+      const nextData = {
+        ...data,
+        pack_upgrade_approved_email_sent_at: sentAt,
+        packUpgradeApprovedEmailSentAt: sentAt,
+        parametrage: {
+          ...param,
+          pack_upgrade_approved_email_sent_at: sentAt,
+          packUpgradeApprovedEmailSentAt: sentAt
+        }
+      };
+
+      await client.query(`UPDATE projects SET data = $1::jsonb, updated_at = NOW() WHERE id = $2`, [JSON.stringify(nextData), projectId]);
+      await client.query("COMMIT");
+
+      const clientMail = buildPackUpgradeApprovedClientEmail({ row, request, recipient });
+      const clientMailResult = await sendTransactionalEmail({
+        to: recipient.clientTo,
+        cc: recipient.clientCc || undefined,
+        subject: clientMail.subject,
+        text: clientMail.text,
+        html: clientMail.html
+      });
+
+      return {
+        sent: clientMailResult.sent === true,
+        clientTo: recipient.clientTo || "",
+        clientCc: recipient.clientCc || "",
+        reason: clientMailResult.reason || ""
+      };
+    } catch (err) {
+      try { await client.query("ROLLBACK"); } catch (_) {}
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   async function runPackAlerts() {
     const pack = await processPackAlerts({ mode: "all" });
     return { pack, totalSent: pack.sent.length, totalSkipped: pack.skipped.length };
   }
 
-  return { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail };
+  return { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail };
 }

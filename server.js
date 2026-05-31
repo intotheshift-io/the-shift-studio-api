@@ -1384,14 +1384,14 @@ async function sendCommunicationLinksUpdatedEmail(projectId) {
 }
 
 const campaignAlerts = createCampaignAlerts({ pool, sendTransactionalEmail });
-const { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts } = campaignAlerts;
+const { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendTransmissionEmails } = campaignAlerts;
 
 const packAlerts = createPackAlerts({
   pool,
   sendTransactionalEmail,
   adminEmail: process.env.ALERT_ADMIN_EMAIL || "contact@intotheshift.io"
 });
-const { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail } = packAlerts;
+const { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail } = packAlerts;
 
 async function runOperationalAlerts() {
   const campaign = await runCampaignAlerts();
@@ -1619,6 +1619,8 @@ app.get("/debug-version", (req, res) => {
     hasCommunicationLinksNotify: true,
     hasPackUpgradeRequestEmail: true,
     hasPackUpgradeSeparateEmails: true,
+    hasPackUpgradeApprovedEmail: true,
+    hasTransmissionEmailTemplatesInCampaignAlerts: true,
     hasOrganizationUsersRoute: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
@@ -3721,11 +3723,22 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
 
     await client.query("COMMIT");
 
+    let packUpgradeApprovedEmail = { sent: false, reason: "NOT_TRIGGERED" };
+    if (typeof sendPackUpgradeApprovedEmail === "function") {
+      try {
+        packUpgradeApprovedEmail = await sendPackUpgradeApprovedEmail(id);
+      } catch (emailErr) {
+        console.error("Erreur notification recharge pack validée", emailErr);
+        packUpgradeApprovedEmail = { sent: false, reason: "SEND_FAILED" };
+      }
+    }
+
     return res.json({
       ok: true,
       status: "approved",
       project: updatedProject.rows[0],
-      organization: formatOrganization(updatedOrg.rows[0])
+      organization: formatOrganization(updatedOrg.rows[0]),
+      packUpgradeApprovedEmail
     });
   } catch (err) {
     await client.query("ROLLBACK");
@@ -4516,126 +4529,6 @@ app.delete("/api/admin/users/:id", auth, requireAdmin, async (req, res) => {
 
 
 
-function buildTransmissionEmailContext(body = {}) {
-  const payload = body.payload && typeof body.payload === "object" ? body.payload : body;
-  const clientInfo = payload.client_info || payload.clientInfo || {};
-
-  const clientEmail =
-    payload.clientEmail ||
-    payload.client_email ||
-    clientInfo.email ||
-    "";
-
-  const clientName =
-    payload.clientName ||
-    payload.client_name ||
-    [clientInfo.prenom || clientInfo.firstName || clientInfo.first_name || "", clientInfo.nom || clientInfo.lastName || clientInfo.last_name || ""].filter(Boolean).join(" ").trim() ||
-    clientInfo.name ||
-    "";
-
-  const companyName =
-    payload.companyName ||
-    payload.company_name ||
-    payload.entreprise ||
-    clientInfo.entreprise ||
-    clientInfo.companyName ||
-    "";
-
-  const autodiagTitle =
-    payload.autodiagTitle ||
-    payload.autodiag_title ||
-    payload.titre_autodiag ||
-    payload.titre_repondants ||
-    "votre autodiagnostic";
-
-  const recapHtml =
-    payload.recap_html ||
-    payload.recapHtml ||
-    payload.pdf_html ||
-    payload.htmlRecap ||
-    "";
-
-  const excelHtml =
-    payload.excel_html ||
-    payload.excelHtml ||
-    payload.excel?.data ||
-    payload.data ||
-    "";
-
-  const safeCompany = String(companyName || "client")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "client";
-
-  const excelFilename =
-    payload.excel_filename ||
-    payload.excelFilename ||
-    payload.excel?.filename ||
-    `configuration-shift-studio-${safeCompany}.xls`;
-
-  const recapFilename =
-    payload.pdf_filename ||
-    payload.recap_filename ||
-    payload.recap?.filename ||
-    `recapitulatif-shift-studio-${safeCompany}.html`;
-
-  const subject = payload.subject || `Votre configuration a bien été transmise à Into The Shift — ${autodiagTitle}`;
-
-  return {
-    payload,
-    clientInfo,
-    clientEmail,
-    clientName,
-    companyName,
-    autodiagTitle,
-    recapHtml,
-    recapFilename,
-    excelHtml,
-    excelFilename,
-    subject
-  };
-}
-
-function buildClientRecapEmailHtml(ctx) {
-  const helloName = ctx.clientName || "";
-  const introHtml = `
-    <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
-      <p>Bonjour ${escapeHtml(helloName)},</p>
-      <p>Votre configuration d’autodiagnostic <strong>${escapeHtml(ctx.autodiagTitle)}</strong> a bien été transmise à Into The Shift.</p>
-      ${ctx.companyName ? `<p><strong>Entreprise :</strong> ${escapeHtml(ctx.companyName)}</p>` : ""}
-      <p>Notre équipe va vérifier les éléments transmis, préparer la mise en ligne et vous confirmer le lien de passation définitif.</p>
-      <p>Vous trouverez ci-dessous le récapitulatif de votre configuration.</p>
-      <hr style="border:none;border-top:1px solid #dce5ee;margin:24px 0">
-    </div>
-  `;
-
-  const outroHtml = `
-    <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
-      <hr style="border:none;border-top:1px solid #dce5ee;margin:24px 0">
-      <p>Pour toute correction ou précision, contactez <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p>
-      <p>L’équipe Into The Shift</p>
-    </div>
-  `;
-
-  return ctx.recapHtml
-    ? `${introHtml}${ctx.recapHtml}${outroHtml}`
-    : `${introHtml}<p style="font-family:Arial,sans-serif;color:#18375d">Le récapitulatif détaillé n’a pas été joint à cette transmission.</p>${outroHtml}`;
-}
-
-function buildClientRecapEmailText(ctx) {
-  return `Bonjour ${ctx.clientName || ""},
-
-Votre configuration d’autodiagnostic "${ctx.autodiagTitle}" a bien été transmise à Into The Shift.
-${ctx.companyName ? `Entreprise : ${ctx.companyName}\n` : ""}
-Notre équipe va vérifier les éléments transmis, préparer la mise en ligne et vous confirmer le lien de passation définitif.
-
-Pour toute correction ou précision, contactez contact@intotheshift.io.
-
-L’équipe Into The Shift`;
-}
-
 function extractProjectIdFromTransmissionBody(body = {}) {
   return (
     body.projectId ||
@@ -4687,93 +4580,27 @@ async function markProjectAsSentFromTransmission(req) {
 
 app.post("/api/transmissions/submit", auth, async (req, res) => {
   try {
-    const ctx = buildTransmissionEmailContext(req.body || {});
+    const transmissionEmail = await sendTransmissionEmails(req.body || {});
 
-    if (!ctx.clientEmail) {
-      return res.status(400).json({
+    if (!transmissionEmail.ok) {
+      const statusCode = transmissionEmail.error === "Email client manquant" || transmissionEmail.error === "Fichier Excel manquant" ? 400 : 500;
+      return res.status(statusCode).json({
         ok: false,
-        clientEmailSent: false,
-        adminEmailSent: false,
-        error: "Email client manquant"
+        clientEmailSent: transmissionEmail.clientEmailSent || false,
+        adminEmailSent: transmissionEmail.adminEmailSent || false,
+        error: transmissionEmail.error || "Erreur transmission email backend"
       });
     }
 
-    if (!ctx.excelHtml) {
-      return res.status(400).json({
-        ok: false,
-        clientEmailSent: false,
-        adminEmailSent: false,
-        error: "Fichier Excel manquant"
-      });
-    }
-
-    const clientHtml = buildClientRecapEmailHtml(ctx);
-    const clientText = buildClientRecapEmailText(ctx);
-
-    const clientMail = await sendTransactionalEmail({
-      to: ctx.clientEmail,
-      subject: ctx.subject,
-      text: clientText,
-      html: clientHtml,
-      attachments: ctx.recapHtml ? [
-        {
-          filename: ctx.recapFilename,
-          content: ctx.recapHtml,
-          contentType: "text/html; charset=utf-8"
-        }
-      ] : []
-    });
-
-    const adminSubject = `Alerte transmission client — ${ctx.companyName || "Client"} — ${ctx.autodiagTitle}`;
-    const adminHtml = `
-      <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
-        <p><strong>Alerte transmission client : une configuration a été transmise depuis Shift Studio.</strong></p>
-        <p>
-          <strong>Entreprise :</strong> ${escapeHtml(ctx.companyName || "—")}<br>
-          <strong>Contact :</strong> ${escapeHtml(ctx.clientName || "—")}<br>
-          <strong>Email :</strong> ${escapeHtml(ctx.clientEmail || "—")}<br>
-          <strong>Autodiagnostic :</strong> ${escapeHtml(ctx.autodiagTitle || "—")}
-        </p>
-        <p>Le fichier Excel de configuration est joint à cet email. Le récapitulatif client est également joint et repris ci-dessous.</p>
-        <hr style="border:none;border-top:1px solid #dce5ee;margin:24px 0">
-        ${ctx.recapHtml || ""}
-      </div>
-    `;
-
-    const adminMail = await sendTransactionalEmail({
-      to: "contact@intotheshift.io",
-      subject: adminSubject,
-      text:
-`Alerte transmission client : une configuration a été transmise depuis Shift Studio.
-
-Entreprise : ${ctx.companyName || "—"}
-Contact : ${ctx.clientName || "—"}
-Email : ${ctx.clientEmail || "—"}
-Autodiagnostic : ${ctx.autodiagTitle || "—"}
-
-Le fichier Excel de configuration est joint à cet email.`,
-      html: adminHtml,
-      attachments: [
-        {
-          filename: ctx.excelFilename,
-          content: ctx.excelHtml,
-          contentType: "application/vnd.ms-excel; charset=utf-8"
-        },
-        ...(ctx.recapHtml ? [{
-          filename: ctx.recapFilename,
-          content: ctx.recapHtml,
-          contentType: "text/html; charset=utf-8"
-        }] : [])
-      ]
-    });
+    const ctx = transmissionEmail.ctx || {};
 
     console.log("TRANSMISSION SUBMIT EMAIL STATUS", {
       clientEmail: ctx.clientEmail,
-      clientEmailSent: clientMail.sent,
-      clientEmailStatus: clientMail.reason || "SENT",
+      clientEmailSent: transmissionEmail.clientEmailSent,
+      clientEmailStatus: transmissionEmail.clientEmailStatus || "SENT",
       adminEmail: "contact@intotheshift.io",
-      adminEmailSent: adminMail.sent,
-      adminEmailStatus: adminMail.reason || "SENT",
+      adminEmailSent: transmissionEmail.adminEmailSent,
+      adminEmailStatus: transmissionEmail.adminEmailStatus || "SENT",
       excelFilename: ctx.excelFilename,
       recapFilename: ctx.recapFilename
     });
@@ -4781,11 +4608,11 @@ Le fichier Excel de configuration est joint à cet email.`,
     const projectStatusUpdate = await markProjectAsSentFromTransmission(req);
 
     return res.json({
-      ok: clientMail.sent && adminMail.sent,
-      clientEmailSent: clientMail.sent,
-      clientEmailStatus: clientMail.reason || "SENT",
-      adminEmailSent: adminMail.sent,
-      adminEmailStatus: adminMail.reason || "SENT",
+      ok: transmissionEmail.clientEmailSent && transmissionEmail.adminEmailSent,
+      clientEmailSent: transmissionEmail.clientEmailSent,
+      clientEmailStatus: transmissionEmail.clientEmailStatus || "SENT",
+      adminEmailSent: transmissionEmail.adminEmailSent,
+      adminEmailStatus: transmissionEmail.adminEmailStatus || "SENT",
       excelFilename: ctx.excelFilename,
       recapFilename: ctx.recapFilename,
       projectStatusUpdated: Boolean(projectStatusUpdate),

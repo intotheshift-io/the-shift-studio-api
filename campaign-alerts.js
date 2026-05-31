@@ -151,6 +151,170 @@ function buildCampaignAlertEmail({ type, row, daysBefore, recipientName }) {
   };
 }
 
+
+function buildTransmissionEmailContext(body = {}) {
+  const payload = body.payload && typeof body.payload === "object" ? body.payload : body;
+  const clientInfo = payload.client_info || payload.clientInfo || {};
+
+  const clientEmail =
+    payload.clientEmail ||
+    payload.client_email ||
+    clientInfo.email ||
+    "";
+
+  const clientName =
+    payload.clientName ||
+    payload.client_name ||
+    [clientInfo.prenom || clientInfo.firstName || clientInfo.first_name || "", clientInfo.nom || clientInfo.lastName || clientInfo.last_name || ""].filter(Boolean).join(" ").trim() ||
+    clientInfo.name ||
+    "";
+
+  const companyName =
+    payload.companyName ||
+    payload.company_name ||
+    payload.entreprise ||
+    clientInfo.entreprise ||
+    clientInfo.companyName ||
+    "";
+
+  const autodiagTitle =
+    payload.autodiagTitle ||
+    payload.autodiag_title ||
+    payload.titre_autodiag ||
+    payload.titre_repondants ||
+    "votre autodiagnostic";
+
+  const recapHtml =
+    payload.recap_html ||
+    payload.recapHtml ||
+    payload.pdf_html ||
+    payload.htmlRecap ||
+    "";
+
+  const excelHtml =
+    payload.excel_html ||
+    payload.excelHtml ||
+    payload.excel?.data ||
+    payload.data ||
+    "";
+
+  const safeCompany = String(companyName || "client")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "client";
+
+  const excelFilename =
+    payload.excel_filename ||
+    payload.excelFilename ||
+    payload.excel?.filename ||
+    `configuration-shift-studio-${safeCompany}.xls`;
+
+  const recapFilename =
+    payload.pdf_filename ||
+    payload.recap_filename ||
+    payload.recap?.filename ||
+    `recapitulatif-shift-studio-${safeCompany}.html`;
+
+  const subject = payload.subject || `Votre configuration a bien été transmise à Into The Shift — ${autodiagTitle}`;
+
+  return {
+    payload,
+    clientInfo,
+    clientEmail,
+    clientName,
+    companyName,
+    autodiagTitle,
+    recapHtml,
+    recapFilename,
+    excelHtml,
+    excelFilename,
+    subject
+  };
+}
+
+function buildClientRecapEmailHtml(ctx) {
+  const helloName = ctx.clientName || "";
+  const introHtml = `
+    <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
+      <p>Bonjour ${escapeHtml(helloName)},</p>
+      <p>Votre configuration d’autodiagnostic <strong>${escapeHtml(ctx.autodiagTitle)}</strong> a bien été transmise à Into The Shift.</p>
+      ${ctx.companyName ? `<p><strong>Entreprise :</strong> ${escapeHtml(ctx.companyName)}</p>` : ""}
+      <p>Notre équipe va vérifier les éléments transmis, préparer la mise en ligne et vous confirmer le lien de passation définitif.</p>
+      <p>Vous trouverez ci-dessous le récapitulatif de votre configuration.</p>
+      <hr style="border:none;border-top:1px solid #dce5ee;margin:24px 0">
+    </div>
+  `;
+
+  const outroHtml = `
+    <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
+      <hr style="border:none;border-top:1px solid #dce5ee;margin:24px 0">
+      <p>Pour toute correction ou précision, contactez <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p>
+      <p>L’équipe Into The Shift</p>
+    </div>
+  `;
+
+  return ctx.recapHtml
+    ? `${introHtml}${ctx.recapHtml}${outroHtml}`
+    : `${introHtml}<p style="font-family:Arial,sans-serif;color:#18375d">Le récapitulatif détaillé n’a pas été joint à cette transmission.</p>${outroHtml}`;
+}
+
+function buildClientRecapEmailText(ctx) {
+  return `Bonjour ${ctx.clientName || ""},
+
+Votre configuration d’autodiagnostic "${ctx.autodiagTitle}" a bien été transmise à Into The Shift.
+${ctx.companyName ? `Entreprise : ${ctx.companyName}\n` : ""}
+Notre équipe va vérifier les éléments transmis, préparer la mise en ligne et vous confirmer le lien de passation définitif.
+
+Pour toute correction ou précision, contactez contact@intotheshift.io.
+
+L’équipe Into The Shift`;
+}
+
+function buildAdminTransmissionEmail(ctx) {
+  return {
+    to: "contact@intotheshift.io",
+    subject: `Alerte transmission client — ${ctx.companyName || "Client"} — ${ctx.autodiagTitle}`,
+    text:
+`Alerte transmission client : une configuration a été transmise depuis Shift Studio.
+
+Entreprise : ${ctx.companyName || "—"}
+Contact : ${ctx.clientName || "—"}
+Email : ${ctx.clientEmail || "—"}
+Autodiagnostic : ${ctx.autodiagTitle || "—"}
+
+Le fichier Excel de configuration est joint à cet email.`,
+    html: `
+      <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
+        <p><strong>Alerte transmission client : une configuration a été transmise depuis Shift Studio.</strong></p>
+        <p>
+          <strong>Entreprise :</strong> ${escapeHtml(ctx.companyName || "—")}<br>
+          <strong>Contact :</strong> ${escapeHtml(ctx.clientName || "—")}<br>
+          <strong>Email :</strong> ${escapeHtml(ctx.clientEmail || "—")}<br>
+          <strong>Autodiagnostic :</strong> ${escapeHtml(ctx.autodiagTitle || "—")}
+        </p>
+        <p>Le fichier Excel de configuration est joint à cet email. Le récapitulatif client est également joint et repris ci-dessous.</p>
+        <hr style="border:none;border-top:1px solid #dce5ee;margin:24px 0">
+        ${ctx.recapHtml || ""}
+      </div>
+    `,
+    attachments: [
+      {
+        filename: ctx.excelFilename,
+        content: ctx.excelHtml,
+        contentType: "application/vnd.ms-excel; charset=utf-8"
+      },
+      ...(ctx.recapHtml ? [{
+        filename: ctx.recapFilename,
+        content: ctx.recapHtml,
+        contentType: "text/html; charset=utf-8"
+      }] : [])
+    ]
+  };
+}
+
+
 export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
   async function autoUnpublishExpiredProjects() {
     await pool.query(`
@@ -249,5 +413,55 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
     };
   }
 
-  return { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts };
+  async function sendTransmissionEmails(body = {}) {
+    const ctx = buildTransmissionEmailContext(body || {});
+
+    if (!ctx.clientEmail) {
+      return {
+        ok: false,
+        clientEmailSent: false,
+        adminEmailSent: false,
+        error: "Email client manquant",
+        ctx
+      };
+    }
+
+    if (!ctx.excelHtml) {
+      return {
+        ok: false,
+        clientEmailSent: false,
+        adminEmailSent: false,
+        error: "Fichier Excel manquant",
+        ctx
+      };
+    }
+
+    const clientMail = await sendTransactionalEmail({
+      to: ctx.clientEmail,
+      subject: ctx.subject,
+      text: buildClientRecapEmailText(ctx),
+      html: buildClientRecapEmailHtml(ctx),
+      attachments: ctx.recapHtml ? [
+        {
+          filename: ctx.recapFilename,
+          content: ctx.recapHtml,
+          contentType: "text/html; charset=utf-8"
+        }
+      ] : []
+    });
+
+    const adminMailConfig = buildAdminTransmissionEmail(ctx);
+    const adminMail = await sendTransactionalEmail(adminMailConfig);
+
+    return {
+      ok: clientMail.sent && adminMail.sent,
+      ctx,
+      clientEmailSent: clientMail.sent,
+      clientEmailStatus: clientMail.reason || "SENT",
+      adminEmailSent: adminMail.sent,
+      adminEmailStatus: adminMail.reason || "SENT"
+    };
+  }
+
+  return { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendTransmissionEmails };
 }
