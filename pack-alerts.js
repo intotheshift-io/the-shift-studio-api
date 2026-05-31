@@ -77,8 +77,8 @@ function buildPackAlertInternalEmail({ row, status, recipient }) {
   const clientName = recipient.clientName;
 
   const recommendation = status.type === "empty"
-    ? "Action recommandée : recharger le pack si des campagnes sont en cours ou rendez-vous sur votre dashboard client."
-    : "Action recommandée : anticiper une recharge si une campagne est en cours ou si une nouvelle publication est prévue.";
+    ? "Action recommandée : Recharger des crédits si des campagnes sont en cours dans l'onglet de votre compte sur votre dashboard client."
+    : "Action recommandée : Anticiper une recharge de crédits si une campagne est en cours ou si une nouvelle publication est prévue.";
 
   return {
     subject: `${subjectPrefix} — ${clientName}`,
@@ -127,9 +127,9 @@ function buildPackAlertClientEmail({ row, status, recipient }) {
       ? `Pack critique pour "${clientName}".\n\nLe nombre de passations restantes est très faible.`
       : `Pack bientôt épuisé pour "${clientName}".`;
   const action = status.type === "empty"
-    ? "recharger le pack si des campagnes sont en cours ou rendez-vous sur votre dashboard client."
+    ? "recharger des crédits si des campagnes sont en cours ou rendez-vous dans l'onglet mon compte de votre dashboard client."
     : status.type === "critical"
-      ? "anticiper immédiatement une recharge."
+      ? "Recharger des crédits dans l'onglet votre compte de votre dashboard."
       : "Rechargez votre pack si une campagne est en cours ou si une nouvelle publication est prévue.";
 
   return {
@@ -241,7 +241,7 @@ function buildPackUpgradeInternalEmail({ row, request, recipient }) {
     text:
 `Bonjour,
 
-Une demande de pack complémentaire a été faite depuis Shift Studio.
+Une demande de crédits complémentaires a été faite depuis Shift Studio.
 
 Client : ${recipient.clientName}
 Autodiagnostic : ${title}
@@ -290,11 +290,11 @@ function buildPackUpgradeClientEmail({ row, request, recipient }) {
   const hello = recipient.requesterName && recipient.requesterName !== "—" ? recipient.requesterName : "";
 
   return {
-    subject: `Votre demande de recharge a bien été prise en compte`,
+    subject: `Votre demande de recharge de crédits a bien été prise en compte`,
     text:
 `Bonjour ${hello},
 
-Votre demande de recharge de pack a bien été enregistrée.
+Votre demande de recharge de crédits a bien été enregistrée.
 
 Pack demandé : ${requestedPack}
 Solde actuel : ${currentRemaining}
@@ -306,12 +306,12 @@ L’équipe Into The Shift`,
 `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
   <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
     <p>Bonjour ${escapeHtml(hello)},</p>
-    <p>Votre demande de recharge de pack a bien été enregistrée.</p>
+    <p>Votre demande de recharge de crédits a bien été enregistrée.</p>
     <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
-      <p style="margin:0"><strong>Pack demandé :</strong> ${escapeHtml(requestedPack)}<br>
+      <p style="margin:0"><strong>Crédits demandés :</strong> ${escapeHtml(requestedPack)}<br>
       <strong>Solde actuel :</strong> ${escapeHtml(currentRemaining)}</p>
     </div>
-    <p>Notre équipe revient vers vous rapidement pour finaliser cette recharge.</p>
+    <p>Notre équipe revient vers vous rapidement pour valider cette recharge.</p>
     <p>L’équipe Into The Shift</p>
   </div>
 </div>`
@@ -331,17 +331,17 @@ function buildPackUpgradeApprovedClientEmail({ row, request, recipient }) {
   const dashboardUrl = makeFrontendUrl("/mes-autodiagnostics.html");
 
   return {
-    subject: `Votre demande de recharge a été validée — ${recipient.clientName}`,
+    subject: `Votre demande de recharge de crédits a été validée — ${recipient.clientName}`,
     text:
 `Bonjour ${hello},
 
-Votre demande de recharge de pack a bien été validée par Into The Shift.
+Votre demande de recharge de crédits a bien été validée par Into The Shift.
 
 Pack demandé : ${requestedPack}
 Nouveau quota : ${isUnlimited ? "Illimité" : currentQuota.toLocaleString("fr-FR")}
 Solde actuel : ${currentRemaining}
 
-Nous allons vous envoyer un devis.
+Nous allons vous adresser un devis dans les plus brefs délais.
 
 Accéder à votre espace Shift Studio :
 ${dashboardUrl}
@@ -351,13 +351,13 @@ L’équipe Into The Shift`,
 `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
   <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
     <p>Bonjour ${escapeHtml(hello)},</p>
-    <p>Votre demande de recharge de pack a bien été validée par <strong>Into The Shift</strong>.</p>
+    <p>Votre demande de recharge de crédits a bien été validée par <strong>Into The Shift</strong>.</p>
     <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
       <p style="margin:0"><strong>Pack demandé :</strong> ${escapeHtml(requestedPack)}<br>
       <strong>Nouveau quota :</strong> ${isUnlimited ? "Illimité" : escapeHtml(currentQuota.toLocaleString("fr-FR"))}<br>
       <strong>Solde actuel :</strong> ${escapeHtml(currentRemaining)}</p>
     </div>
-    <p>Nous allons vous envoyer un devis.</p>
+    <p>Nous allons vous adresser un devis.</p>
     <p style="margin:22px 0 10px"><a href="${escapeHtml(dashboardUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder à mon espace Shift Studio</a></p>
     <p>L’équipe Into The Shift</p>
   </div>
