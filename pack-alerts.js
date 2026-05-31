@@ -85,7 +85,7 @@ function buildPackAlertInternalEmail({ row, status, recipient }) {
     text:
 `Bonjour,
 
-${subjectPrefix} pour le cockpit client "${clientName}".
+${subjectPrefix} pour "${clientName}".
 
 Passations utilisées : ${status.used.toLocaleString("fr-FR")}
 Quota : ${status.quota.toLocaleString("fr-FR")}
@@ -102,7 +102,7 @@ L’équipe Into The Shift`,
 `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
   <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
     <p>Bonjour,</p>
-    <p><strong>${escapeHtml(subjectPrefix)}</strong> pour le cockpit client <strong>${escapeHtml(clientName)}</strong>.</p>
+    <p><strong>${escapeHtml(subjectPrefix)}</strong> pour <strong>${escapeHtml(clientName)}</strong>.</p>
     <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
       <p style="margin:0"><strong>Passations utilisées :</strong> ${escapeHtml(status.used.toLocaleString("fr-FR"))}<br>
       <strong>Quota :</strong> ${escapeHtml(status.quota.toLocaleString("fr-FR"))}<br>
