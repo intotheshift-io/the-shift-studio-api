@@ -588,6 +588,114 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     }
   }
 
+
+  async function sendAccountPackUpgradeRequestEmail({ organizationId, userId, packChoice }) {
+    const choice = String(packChoice || '').trim();
+    if (!choice || choice === 'current_pack' || choice === 'existing') {
+      return { sent: false, reason: 'INVALID_PACK_CHOICE' };
+    }
+
+    const amount = choice === 'illimite' ? null : Number(choice || 0);
+    if (choice !== 'illimite' && (!Number.isFinite(amount) || amount <= 0)) {
+      return { sent: false, reason: 'INVALID_PACK_CHOICE' };
+    }
+
+    const result = await pool.query(`
+      SELECT
+        o.id AS organization_id,
+        o.name AS organization_name,
+        o.contact_name,
+        o.contact_email,
+        o.passations_pack AS organization_passations_pack,
+        o.passations_quota AS organization_passations_quota,
+        o.passations_used AS organization_passations_used,
+        client_user.email AS user_email,
+        client_user.first_name AS user_first_name,
+        client_user.last_name AS user_last_name,
+        client_user.company_name AS user_company_name,
+        partner.email AS partner_email
+      FROM organizations o
+      LEFT JOIN users client_user ON client_user.id = $2
+      LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+      WHERE o.id = $1
+      LIMIT 1
+    `, [organizationId, userId]);
+
+    const row = result.rows[0];
+    if (!row) return { sent: false, reason: 'ORGANIZATION_NOT_FOUND' };
+
+    const currentQuota = Number(row.organization_passations_quota || 0);
+    const currentUsed = Number(row.organization_passations_used || 0);
+    const isCurrentUnlimited = String(row.organization_passations_pack || '').toLowerCase() === 'illimite';
+
+    if (isCurrentUnlimited && choice !== 'illimite') {
+      return { sent: false, reason: 'NOT_REQUIRED_UNLIMITED_PACK' };
+    }
+
+    const request = {
+      requested: true,
+      status: 'pending',
+      choice,
+      amount,
+      totalAfter: choice === 'illimite' ? null : currentQuota + amount,
+      unlimited: choice === 'illimite',
+      currentQuota,
+      currentUsed,
+      currentRemaining: isCurrentUnlimited ? null : Math.max(0, currentQuota - currentUsed)
+    };
+
+    const mailRow = {
+      id: null,
+      title: 'Demande de recharge depuis Mon compte',
+      display_title: 'Recharge de pack',
+      data: {},
+      organization_name: row.organization_name,
+      contact_name: row.contact_name,
+      contact_email: row.contact_email,
+      organization_passations_pack: row.organization_passations_pack,
+      organization_passations_quota: row.organization_passations_quota,
+      organization_passations_used: row.organization_passations_used,
+      user_email: row.user_email,
+      user_first_name: row.user_first_name,
+      user_last_name: row.user_last_name,
+      user_company_name: row.user_company_name,
+      partner_email: row.partner_email,
+      frontend_url: process.env.FRONTEND_URL || 'https://shiftstudio.intotheshift.io'
+    };
+
+    const recipient = getPackUpgradeRequestRecipients(mailRow, adminEmail);
+    if (!recipient.internalTo) return { sent: false, reason: 'NO_ADMIN_RECIPIENT' };
+
+    const internalMail = buildPackUpgradeInternalEmail({ row: mailRow, request, recipient });
+    const internalMailResult = await sendTransactionalEmail({
+      to: recipient.internalTo,
+      subject: internalMail.subject,
+      text: internalMail.text,
+      html: internalMail.html
+    });
+
+    let clientMailResult = { sent: false, reason: 'NO_CLIENT_RECIPIENT' };
+    if (recipient.clientTo) {
+      const clientMail = buildPackUpgradeClientEmail({ row: mailRow, request, recipient });
+      clientMailResult = await sendTransactionalEmail({
+        to: recipient.clientTo,
+        cc: recipient.clientCc || undefined,
+        subject: clientMail.subject,
+        text: clientMail.text,
+        html: clientMail.html
+      });
+    }
+
+    return {
+      sent: internalMailResult.sent === true,
+      internalTo: recipient.internalTo,
+      clientTo: recipient.clientTo || '',
+      clientCc: recipient.clientCc || '',
+      clientEmailSent: clientMailResult.sent === true,
+      reason: internalMailResult.reason || ''
+    };
+  }
+
   async function sendPackUpgradeApprovedEmail(projectId) {
     const client = await pool.connect();
 
@@ -703,5 +811,5 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     return { pack, totalSent: pack.sent.length, totalSkipped: pack.skipped.length };
   }
 
-  return { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail };
+  return { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail };
 }

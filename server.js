@@ -1391,7 +1391,7 @@ const packAlerts = createPackAlerts({
   sendTransactionalEmail,
   adminEmail: process.env.ALERT_ADMIN_EMAIL || "contact@intotheshift.io"
 });
-const { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail } = packAlerts;
+const { processPackAlerts, runPackAlerts, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail } = packAlerts;
 
 async function runOperationalAlerts() {
   const campaign = await runCampaignAlerts();
@@ -1850,6 +1850,61 @@ app.get("/api/me/organization-quota", auth, async (req, res) => {
   } catch (err) {
     console.error("GET /api/me/organization-quota", err);
     res.status(500).json({ error: "Erreur chargement quota client." });
+  }
+});
+
+
+app.post("/api/me/pack-upgrade-request", auth, async (req, res) => {
+  const packChoice = String(req.body?.packChoice || req.body?.pack_choisi || "").trim();
+
+  if (!packChoice || packChoice === "current_pack" || packChoice === "existing") {
+    return res.status(400).json({ error: "Pack de recharge invalide." });
+  }
+
+  const amount = packChoice === "illimite" ? null : Number(packChoice || 0);
+  if (packChoice !== "illimite" && (!Number.isFinite(amount) || amount <= 0)) {
+    return res.status(400).json({ error: "Pack de recharge invalide." });
+  }
+
+  try {
+    const organizationId = await getUserPrimaryOrganizationId(req.user.id);
+    if (!organizationId) {
+      return res.status(400).json({ error: "Aucun cockpit client n’est rattaché à ce compte." });
+    }
+
+    if (typeof sendAccountPackUpgradeRequestEmail !== "function") {
+      return res.status(500).json({ error: "Alerte recharge indisponible." });
+    }
+
+    const result = await sendAccountPackUpgradeRequestEmail({
+      organizationId,
+      userId: req.user.id,
+      packChoice
+    });
+
+    if (result?.reason === "NOT_REQUIRED_UNLIMITED_PACK") {
+      return res.status(400).json({ error: "Votre pack actuel est déjà illimité." });
+    }
+
+    if (result?.reason === "ORGANIZATION_NOT_FOUND") {
+      return res.status(404).json({ error: "Cockpit client introuvable." });
+    }
+
+    if (!result?.sent) {
+      return res.status(500).json({ error: "Demande enregistrée mais email interne non envoyé.", emailStatus: result?.reason || "SEND_FAILED" });
+    }
+
+    res.json({
+      ok: true,
+      packChoice,
+      emailSent: true,
+      clientEmailSent: result.clientEmailSent === true,
+      internalTo: result.internalTo || "",
+      clientTo: result.clientTo || ""
+    });
+  } catch (err) {
+    console.error("POST /api/me/pack-upgrade-request", err);
+    res.status(500).json({ error: "Erreur demande de recharge pack." });
   }
 });
 
