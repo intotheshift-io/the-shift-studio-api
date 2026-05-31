@@ -1507,7 +1507,7 @@ async function sendCommunicationLinksUpdatedEmail(projectId) {
 }
 
 const campaignAlerts = createCampaignAlerts({ pool, sendTransactionalEmail });
-const { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendTransmissionEmails } = campaignAlerts;
+const { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendTransmissionEmails, sendExtensionEmails } = campaignAlerts;
 
 const packAlerts = createPackAlerts({
   pool,
@@ -1745,6 +1745,7 @@ app.get("/debug-version", (req, res) => {
     hasPackUpgradeSeparateEmails: true,
     hasPackUpgradeApprovedEmail: true,
     hasTransmissionEmailTemplatesInCampaignAlerts: true,
+    hasCampaignExtensionEmails: true,
     hasOrganizationUsersRoute: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
@@ -4945,7 +4946,23 @@ async function markProjectAsSentFromTransmission(req) {
 
 app.post("/api/transmissions/submit", auth, async (req, res) => {
   try {
-    const transmissionEmail = await sendTransmissionEmails(req.body || {});
+    const payloadForEmail = req.body || {};
+    const normalizedPayload = payloadForEmail.payload && typeof payloadForEmail.payload === "object" ? payloadForEmail.payload : payloadForEmail;
+    const isExtensionTransmission =
+      payloadForEmail.isExtending === true ||
+      payloadForEmail.extending === true ||
+      payloadForEmail.isExtension === true ||
+      payloadForEmail.extension === true ||
+      normalizedPayload.isExtending === true ||
+      normalizedPayload.extending === true ||
+      normalizedPayload.isExtension === true ||
+      normalizedPayload.extension === true ||
+      normalizedPayload.extended === true ||
+      normalizedPayload.isExtended === true;
+
+    const transmissionEmail = isExtensionTransmission && typeof sendExtensionEmails === "function"
+      ? await sendExtensionEmails(payloadForEmail)
+      : await sendTransmissionEmails(payloadForEmail);
 
     if (!transmissionEmail.ok) {
       const statusCode = transmissionEmail.error === "Email client manquant" || transmissionEmail.error === "Fichier Excel manquant" ? 400 : 500;

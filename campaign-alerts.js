@@ -272,6 +272,86 @@ Pour toute correction ou précision, contactez contact@intotheshift.io.
 L’équipe Into The Shift`;
 }
 
+
+function buildClientExtensionEmail(ctx) {
+  const helloName = ctx.clientName || "";
+  const oldEndDate = formatDateLongFr(ctx.oldEndDate || ctx.previousEndDate || "");
+  const newEndDate = formatDateLongFr(ctx.newEndDate || ctx.campaignEndDate || ctx.endDate || "");
+  const shareUrl = ctx.shareUrl || ctx.share_url || "";
+
+  return {
+    subject: `Votre campagne a été prolongée — ${ctx.autodiagTitle}`,
+    text:
+`Bonjour ${helloName},
+
+La date de clôture de votre campagne "${ctx.autodiagTitle}" a bien été mise à jour.
+
+Ancienne date de clôture : ${oldEndDate}
+Nouvelle date de clôture : ${newEndDate}
+
+Les liens de diffusion et de résultats restent inchangés.
+${shareUrl ? `\nLien de passation : ${shareUrl}\n` : ""}
+Vous n’avez aucune nouvelle configuration à transmettre.
+
+L’équipe Into The Shift`,
+    html: `
+      <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
+        <p>Bonjour ${escapeHtml(helloName)},</p>
+        <p>La date de clôture de votre campagne <strong>${escapeHtml(ctx.autodiagTitle)}</strong> a bien été mise à jour.</p>
+        <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
+          <p style="margin:0">
+            <strong>Ancienne date de clôture :</strong> ${escapeHtml(oldEndDate)}<br>
+            <strong>Nouvelle date de clôture :</strong> ${escapeHtml(newEndDate)}
+          </p>
+        </div>
+        <p>Les liens de diffusion et de résultats restent inchangés.</p>
+        ${shareUrl ? `<p style="margin:22px 0 10px"><a href="${escapeHtml(shareUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au lien de passation</a></p>` : ""}
+        <p>Vous n’avez aucune nouvelle configuration à transmettre.</p>
+        <p>L’équipe Into The Shift</p>
+      </div>
+    `
+  };
+}
+
+function buildAdminExtensionEmail(ctx) {
+  const oldEndDate = formatDateLongFr(ctx.oldEndDate || ctx.previousEndDate || "");
+  const newEndDate = formatDateLongFr(ctx.newEndDate || ctx.campaignEndDate || ctx.endDate || "");
+
+  return {
+    to: "contact@intotheshift.io",
+    subject: `Prolongation de campagne — ${ctx.companyName || "Client"} — ${ctx.autodiagTitle}`,
+    text:
+`Prolongation de campagne demandée depuis Shift Studio.
+
+Entreprise : ${ctx.companyName || "—"}
+Contact : ${ctx.clientName || "—"}
+Email : ${ctx.clientEmail || "—"}
+Autodiagnostic : ${ctx.autodiagTitle || "—"}
+Ancienne date de clôture : ${oldEndDate}
+Nouvelle date de clôture : ${newEndDate}
+
+Action interne : vérifier que la nouvelle date de clôture est bien prise en compte sur les supports et le suivi de campagne.
+
+Cet email concerne uniquement une prolongation : ce n’est pas une nouvelle configuration.`,
+    html: `
+      <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
+        <p><strong>Prolongation de campagne demandée depuis Shift Studio.</strong></p>
+        <p>
+          <strong>Entreprise :</strong> ${escapeHtml(ctx.companyName || "—")}<br>
+          <strong>Contact :</strong> ${escapeHtml(ctx.clientName || "—")}<br>
+          <strong>Email :</strong> ${escapeHtml(ctx.clientEmail || "—")}<br>
+          <strong>Autodiagnostic :</strong> ${escapeHtml(ctx.autodiagTitle || "—")}<br>
+          <strong>Ancienne date de clôture :</strong> ${escapeHtml(oldEndDate)}<br>
+          <strong>Nouvelle date de clôture :</strong> ${escapeHtml(newEndDate)}
+        </p>
+        <p><strong>Action interne :</strong> vérifier que la nouvelle date de clôture est bien prise en compte sur les supports et le suivi de campagne.</p>
+        <p><em>Cet email concerne uniquement une prolongation : ce n’est pas une nouvelle configuration.</em></p>
+      </div>
+    `
+  };
+}
+
+
 function buildAdminTransmissionEmail(ctx) {
   return {
     to: "contact@intotheshift.io",
@@ -413,6 +493,81 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
     };
   }
 
+
+  async function sendExtensionEmails(body = {}) {
+    const ctx = buildTransmissionEmailContext(body || {});
+    const sourcePayload = body.payload && typeof body.payload === "object" ? body.payload : body;
+
+    ctx.oldEndDate =
+      body.oldEndDate ||
+      body.previousEndDate ||
+      body.previous_end_date ||
+      body.old_end_date ||
+      sourcePayload.oldEndDate ||
+      sourcePayload.previousEndDate ||
+      sourcePayload.previous_end_date ||
+      sourcePayload.old_end_date ||
+      "";
+
+    ctx.newEndDate =
+      body.newEndDate ||
+      body.campaignEndDate ||
+      body.campaign_end_date ||
+      body.endDate ||
+      body.end_date ||
+      sourcePayload.newEndDate ||
+      sourcePayload.campaignEndDate ||
+      sourcePayload.campaign_end_date ||
+      sourcePayload.date_cloture ||
+      sourcePayload.endDate ||
+      sourcePayload.end_date ||
+      "";
+
+    ctx.shareUrl =
+      body.shareUrl ||
+      body.share_url ||
+      sourcePayload.shareUrl ||
+      sourcePayload.share_url ||
+      "";
+
+    ctx.resultsUrl =
+      body.resultsUrl ||
+      body.results_url ||
+      sourcePayload.resultsUrl ||
+      sourcePayload.results_url ||
+      "";
+
+    if (!ctx.clientEmail) {
+      return {
+        ok: false,
+        clientEmailSent: false,
+        adminEmailSent: false,
+        error: "Email client manquant",
+        ctx
+      };
+    }
+
+    const clientEmail = buildClientExtensionEmail(ctx);
+    const clientMail = await sendTransactionalEmail({
+      to: ctx.clientEmail,
+      subject: clientEmail.subject,
+      text: clientEmail.text,
+      html: clientEmail.html
+    });
+
+    const adminMailConfig = buildAdminExtensionEmail(ctx);
+    const adminMail = await sendTransactionalEmail(adminMailConfig);
+
+    return {
+      ok: clientMail.sent && adminMail.sent,
+      ctx,
+      clientEmailSent: clientMail.sent,
+      clientEmailStatus: clientMail.reason || "SENT",
+      adminEmailSent: adminMail.sent,
+      adminEmailStatus: adminMail.reason || "SENT"
+    };
+  }
+
   async function sendTransmissionEmails(body = {}) {
     const ctx = buildTransmissionEmailContext(body || {});
 
@@ -463,5 +618,5 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
     };
   }
 
-  return { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendTransmissionEmails };
+  return { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendTransmissionEmails, sendExtensionEmails };
 }
