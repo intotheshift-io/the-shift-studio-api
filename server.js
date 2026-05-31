@@ -1507,7 +1507,7 @@ async function sendCommunicationLinksUpdatedEmail(projectId) {
 }
 
 const campaignAlerts = createCampaignAlerts({ pool, sendTransactionalEmail });
-const { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendTransmissionEmails, sendExtensionEmails } = campaignAlerts;
+const { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendTransmissionEmails, sendExtensionEmails, sendReprogrammingEmails } = campaignAlerts;
 
 const packAlerts = createPackAlerts({
   pool,

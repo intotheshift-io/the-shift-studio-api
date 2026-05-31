@@ -273,6 +273,76 @@ L’équipe Into The Shift`;
 }
 
 
+
+
+function buildClientReprogrammingEmail(ctx) {
+  const helloName = ctx.clientName || "";
+  const oldEndDate = formatDateLongFr(ctx.oldEndDate || ctx.previousEndDate || "");
+  const newEndDate = formatDateLongFr(ctx.newEndDate || ctx.campaignEndDate || ctx.endDate || "");
+
+  return {
+    subject: `Votre campagne a été reprogrammée — ${ctx.autodiagTitle}`,
+    text:
+`Bonjour ${helloName},
+
+La campagne "${ctx.autodiagTitle}" a bien été reprogrammée.
+
+Ancienne date de clôture : ${oldEndDate}
+Nouvelle date de clôture : ${newEndDate}
+
+Cette reprogrammation remplace la précédente configuration de diffusion.
+
+L’équipe Into The Shift`,
+    html: `
+      <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
+        <p>Bonjour ${escapeHtml(helloName)},</p>
+        <p>La campagne <strong>${escapeHtml(ctx.autodiagTitle)}</strong> a bien été reprogrammée.</p>
+        <p>
+          <strong>Ancienne date de clôture :</strong> ${escapeHtml(oldEndDate)}<br>
+          <strong>Nouvelle date de clôture :</strong> ${escapeHtml(newEndDate)}
+        </p>
+        <p>Cette reprogrammation remplace la précédente configuration de diffusion.</p>
+        <p>L’équipe Into The Shift</p>
+      </div>
+    `
+  };
+}
+
+function buildAdminReprogrammingEmail(ctx) {
+  const oldEndDate = formatDateLongFr(ctx.oldEndDate || ctx.previousEndDate || "");
+  const newEndDate = formatDateLongFr(ctx.newEndDate || ctx.campaignEndDate || ctx.endDate || "");
+
+  return {
+    to: "contact@intotheshift.io",
+    subject: `Reprogrammation de campagne — ${ctx.companyName || "Client"} — ${ctx.autodiagTitle}`,
+    text:
+`Reprogrammation de campagne demandée depuis Shift Studio.
+
+Entreprise : ${ctx.companyName || "—"}
+Contact : ${ctx.clientName || "—"}
+Email : ${ctx.clientEmail || "—"}
+Autodiagnostic : ${ctx.autodiagTitle || "—"}
+Ancienne date de clôture : ${oldEndDate}
+Nouvelle date de clôture : ${newEndDate}
+
+Action interne : republier la campagne avec les nouvelles dates et paramètres.`,
+    html: `
+      <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
+        <p><strong>Reprogrammation de campagne demandée depuis Shift Studio.</strong></p>
+        <p>
+          <strong>Entreprise :</strong> ${escapeHtml(ctx.companyName || "—")}<br>
+          <strong>Contact :</strong> ${escapeHtml(ctx.clientName || "—")}<br>
+          <strong>Email :</strong> ${escapeHtml(ctx.clientEmail || "—")}<br>
+          <strong>Autodiagnostic :</strong> ${escapeHtml(ctx.autodiagTitle || "—")}<br>
+          <strong>Ancienne date de clôture :</strong> ${escapeHtml(oldEndDate)}<br>
+          <strong>Nouvelle date de clôture :</strong> ${escapeHtml(newEndDate)}
+        </p>
+        <p>Action interne : republier la campagne avec les nouvelles dates et paramètres.</p>
+      </div>
+    `
+  };
+}
+
 function buildClientExtensionEmail(ctx) {
   const helloName = ctx.clientName || "";
   const oldEndDate = formatDateLongFr(ctx.oldEndDate || ctx.previousEndDate || "");
@@ -568,6 +638,57 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
     };
   }
 
+
+  async function sendReprogrammingEmails(body = {}) {
+    const ctx = buildTransmissionEmailContext(body || {});
+    const sourcePayload = body.payload && typeof body.payload === "object" ? body.payload : body;
+
+    ctx.oldEndDate =
+      body.oldEndDate ||
+      body.previousEndDate ||
+      body.previous_end_date ||
+      body.old_end_date ||
+      sourcePayload.oldEndDate ||
+      sourcePayload.previousEndDate ||
+      sourcePayload.previous_end_date ||
+      sourcePayload.old_end_date ||
+      "";
+
+    ctx.newEndDate =
+      body.newEndDate ||
+      body.campaignEndDate ||
+      body.campaign_end_date ||
+      body.endDate ||
+      body.end_date ||
+      sourcePayload.newEndDate ||
+      sourcePayload.campaignEndDate ||
+      sourcePayload.campaign_end_date ||
+      sourcePayload.date_cloture ||
+      sourcePayload.endDate ||
+      sourcePayload.end_date ||
+      "";
+
+    const clientConfig = buildClientReprogrammingEmail(ctx);
+
+    const clientMail = await sendTransactionalEmail({
+      to: ctx.clientEmail,
+      subject: clientConfig.subject,
+      text: clientConfig.text,
+      html: clientConfig.html
+    });
+
+    const adminMail = await sendTransactionalEmail(buildAdminReprogrammingEmail(ctx));
+
+    return {
+      ok: clientMail.sent && adminMail.sent,
+      ctx,
+      clientEmailSent: clientMail.sent,
+      clientEmailStatus: clientMail.reason || "SENT",
+      adminEmailSent: adminMail.sent,
+      adminEmailStatus: adminMail.reason || "SENT"
+    };
+  }
+
   async function sendTransmissionEmails(body = {}) {
     const ctx = buildTransmissionEmailContext(body || {});
 
@@ -620,3 +741,5 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
 
   return { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendTransmissionEmails, sendExtensionEmails };
 }
+
+module.exports.sendReprogrammingEmails = sendReprogrammingEmails;
