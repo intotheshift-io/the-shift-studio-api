@@ -89,6 +89,26 @@ function formatOrganization(org) {
     passationsQuota: quota,
     passationsUsed: used,
     passationsRemaining: Math.max(0, quota - used),
+    packUpgradeRequested: org.pack_upgrade_requested === true,
+    packUpgradeStatus: org.pack_upgrade_status || "",
+    packUpgradeChoice: org.pack_upgrade_choice || "",
+    packUpgradeAmount: org.pack_upgrade_amount === null || org.pack_upgrade_amount === undefined ? null : Number(org.pack_upgrade_amount || 0),
+    packUpgradeTotalAfter: org.pack_upgrade_total_after === null || org.pack_upgrade_total_after === undefined ? null : Number(org.pack_upgrade_total_after || 0),
+    packUpgradeUnlimited: org.pack_upgrade_unlimited === true,
+    packUpgradeRequestedByEmail: org.pack_upgrade_requested_by_email || "",
+    packUpgradeRequestedAt: org.pack_upgrade_requested_at || null,
+    packUpgradeSourceProjectId: org.pack_upgrade_source_project_id || null,
+    packUpgradeRequest: org.pack_upgrade_requested === true ? {
+      requested: true,
+      status: org.pack_upgrade_status || "pending",
+      choice: org.pack_upgrade_choice || "",
+      amount: org.pack_upgrade_amount === null || org.pack_upgrade_amount === undefined ? null : Number(org.pack_upgrade_amount || 0),
+      totalAfter: org.pack_upgrade_total_after === null || org.pack_upgrade_total_after === undefined ? null : Number(org.pack_upgrade_total_after || 0),
+      unlimited: org.pack_upgrade_unlimited === true,
+      requestedByEmail: org.pack_upgrade_requested_by_email || "",
+      requestedAt: org.pack_upgrade_requested_at || null,
+      sourceProjectId: org.pack_upgrade_source_project_id || null
+    } : null,
     createdAt: org.created_at || null
   };
 }
@@ -306,6 +326,67 @@ async function initDb() {
   await pool.query(`
     ALTER TABLE organizations
     ADD COLUMN IF NOT EXISTS pack_alert_empty_sent_at TIMESTAMP;
+  `);
+
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_upgrade_requested BOOLEAN DEFAULT false;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_upgrade_status TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_upgrade_choice TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_upgrade_amount INTEGER;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_upgrade_total_after INTEGER;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_upgrade_unlimited BOOLEAN DEFAULT false;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_upgrade_requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_upgrade_requested_by_email TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_upgrade_source_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_upgrade_requested_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_upgrade_email_sent_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_upgrade_approved_email_sent_at TIMESTAMP;
   `);
 
   await pool.query(`
@@ -854,6 +935,48 @@ async function notifyPackUpgradeRequestIfNeeded(projectId) {
     console.error("Erreur notification demande de devis pack", err);
     return { sent: false, reason: "SEND_FAILED" };
   }
+}
+
+
+async function persistOrganizationPackUpgradeRequest({ organizationId, userId = null, userEmail = '', sourceProjectId = null, request = {} }) {
+  const orgId = Number(organizationId);
+  if (!Number.isInteger(orgId) || orgId <= 0 || !request?.requested) return null;
+
+  const choice = String(request.choice || '').trim();
+  if (!choice || choice === 'current_pack' || choice === 'existing') return null;
+
+  const amount = request.unlimited || choice === 'illimite' ? null : Number(request.amount || choice || 0);
+  if (choice !== 'illimite' && (!Number.isFinite(amount) || amount <= 0)) return null;
+
+  const result = await pool.query(
+    `UPDATE organizations
+     SET pack_upgrade_requested = true,
+         pack_upgrade_status = 'pending',
+         pack_upgrade_choice = $1,
+         pack_upgrade_amount = $2,
+         pack_upgrade_total_after = $3,
+         pack_upgrade_unlimited = $4,
+         pack_upgrade_requested_by = $5,
+         pack_upgrade_requested_by_email = $6,
+         pack_upgrade_source_project_id = $7,
+         pack_upgrade_requested_at = NOW(),
+         pack_upgrade_email_sent_at = NULL,
+         pack_upgrade_approved_email_sent_at = NULL
+     WHERE id = $8
+     RETURNING *`,
+    [
+      choice,
+      choice === 'illimite' ? null : amount,
+      request.unlimited || choice === 'illimite' ? null : (request.totalAfter || null),
+      request.unlimited === true || choice === 'illimite',
+      userId || null,
+      userEmail || '',
+      sourceProjectId || null,
+      orgId
+    ]
+  );
+
+  return result.rows[0] || null;
 }
 
 function formatDateLongFr(value) {
@@ -1762,6 +1885,8 @@ L’équipe Into The Shift`,
       });
     }
 
+    await pool.query(`UPDATE organizations SET pack_upgrade_email_sent_at = NOW() WHERE id = $1`, [organizationId]);
+
     res.json({
       ok: true,
       message: "Si un compte existe avec cet email, un lien de réinitialisation a été envoyé."
@@ -1871,6 +1996,26 @@ app.post("/api/me/pack-upgrade-request", auth, async (req, res) => {
     if (!organizationId) {
       return res.status(400).json({ error: "Aucun cockpit client n’est rattaché à ce compte." });
     }
+
+    const orgForRequest = await getOrganizationForPackUpgrade(organizationId);
+    if (String(orgForRequest.passations_pack || orgForRequest.organization_passations_pack || "").toLowerCase() === "illimite" && packChoice !== "illimite") {
+      return res.status(400).json({ error: "Votre pack actuel est déjà illimité." });
+    }
+
+    await persistOrganizationPackUpgradeRequest({
+      organizationId,
+      userId: req.user.id,
+      userEmail: req.user.email || "",
+      sourceProjectId: null,
+      request: {
+        requested: true,
+        status: "pending",
+        choice: packChoice,
+        amount,
+        totalAfter: packChoice === "illimite" ? null : Number(orgForRequest.passations_quota || 0) + Number(amount || 0),
+        unlimited: packChoice === "illimite"
+      }
+    });
 
     if (typeof sendAccountPackUpgradeRequestEmail !== "function") {
       return res.status(500).json({ error: "Alerte recharge indisponible." });
@@ -2188,6 +2333,13 @@ app.post("/api/projects", auth, async (req, res) => {
 
     if (updateResult.rows[0]) {
       if (packUpgradeRequest.requested && packUpgradeRequest.status === "pending") {
+        await persistOrganizationPackUpgradeRequest({
+          organizationId: finalOrganizationId,
+          userId: req.user.id,
+          userEmail: req.user.email || "",
+          sourceProjectId: updateResult.rows[0].id,
+          request: packUpgradeRequest
+        });
         await notifyPackUpgradeRequestIfNeeded(updateResult.rows[0].id);
       }
       return res.json({ project: updateResult.rows[0] });
@@ -2222,6 +2374,13 @@ app.post("/api/projects", auth, async (req, res) => {
   );
 
   if (packUpgradeRequest.requested && packUpgradeRequest.status === "pending") {
+    await persistOrganizationPackUpgradeRequest({
+      organizationId: finalOrganizationId,
+      userId: req.user.id,
+      userEmail: req.user.email || "",
+      sourceProjectId: result.rows[0].id,
+      request: packUpgradeRequest
+    });
     await notifyPackUpgradeRequestIfNeeded(result.rows[0].id);
   }
 
@@ -3659,6 +3818,131 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
   }
 });
 
+
+
+app.patch("/api/admin/organizations/:id/pack-upgrade", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const action = String(req.body?.action || "").toLowerCase();
+
+  if (!["approve", "reject"].includes(action)) {
+    return res.status(400).json({ error: "Action invalide. Utilisez approve ou reject." });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const orgResult = await client.query(`SELECT * FROM organizations WHERE id = $1 FOR UPDATE`, [id]);
+    const org = orgResult.rows[0];
+    if (!org) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Cockpit client introuvable." });
+    }
+
+    if (org.pack_upgrade_requested !== true || String(org.pack_upgrade_status || "").toLowerCase() !== "pending") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Aucune recharge pack à valider pour ce cockpit client." });
+    }
+
+    const request = {
+      requested: true,
+      status: "pending",
+      choice: org.pack_upgrade_choice || "",
+      amount: org.pack_upgrade_amount,
+      totalAfter: org.pack_upgrade_total_after,
+      unlimited: org.pack_upgrade_unlimited === true
+    };
+
+    if (action === "reject") {
+      const rejectedOrg = await client.query(
+        `UPDATE organizations
+         SET pack_upgrade_status = 'rejected'
+         WHERE id = $1
+         RETURNING *`,
+        [id]
+      );
+
+      if (org.pack_upgrade_source_project_id) {
+        const projectResult = await client.query(`SELECT * FROM projects WHERE id = $1 FOR UPDATE`, [org.pack_upgrade_source_project_id]);
+        const project = projectResult.rows[0];
+        if (project) {
+          const rejectedData = applyPackUpgradeMetadata(project.data || {}, request, "rejected");
+          await client.query(`UPDATE projects SET data = $1::jsonb, updated_at = NOW() WHERE id = $2`, [JSON.stringify(rejectedData), project.id]);
+        }
+      }
+
+      await client.query("COMMIT");
+      return res.json({ ok: true, status: "rejected", organization: formatOrganization(rejectedOrg.rows[0]) });
+    }
+
+    let updatedOrg;
+    if (request.unlimited || String(request.choice || "") === "illimite") {
+      updatedOrg = await client.query(
+        `UPDATE organizations
+         SET passations_pack = 'illimite',
+             passations_quota = 0,
+             pack_upgrade_status = 'approved'
+         WHERE id = $1
+         RETURNING *`,
+        [id]
+      );
+    } else {
+      const amount = Number(request.amount || request.choice || 0);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "Montant de recharge invalide." });
+      }
+
+      const currentQuota = Number(org.passations_quota || 0);
+      const nextQuota = currentQuota + amount;
+      updatedOrg = await client.query(
+        `UPDATE organizations
+         SET passations_pack = $1,
+             passations_quota = $2,
+             pack_upgrade_status = 'approved',
+             pack_upgrade_total_after = $2
+         WHERE id = $3
+         RETURNING *`,
+        [String(nextQuota), nextQuota, id]
+      );
+    }
+
+    if (org.pack_upgrade_source_project_id) {
+      const projectResult = await client.query(`SELECT * FROM projects WHERE id = $1 FOR UPDATE`, [org.pack_upgrade_source_project_id]);
+      const project = projectResult.rows[0];
+      if (project) {
+        const approvedData = applyPackUpgradeMetadata(project.data || {}, request, "approved");
+        await client.query(`UPDATE projects SET data = $1::jsonb, updated_at = NOW() WHERE id = $2`, [JSON.stringify(approvedData), project.id]);
+      }
+    }
+
+    await client.query("COMMIT");
+
+    let packUpgradeApprovedEmail = { sent: false, reason: "NO_SOURCE_PROJECT" };
+    if (org.pack_upgrade_source_project_id && typeof sendPackUpgradeApprovedEmail === "function") {
+      try {
+        packUpgradeApprovedEmail = await sendPackUpgradeApprovedEmail(org.pack_upgrade_source_project_id);
+      } catch (emailErr) {
+        console.error("Erreur notification recharge pack validée", emailErr);
+        packUpgradeApprovedEmail = { sent: false, reason: "SEND_FAILED" };
+      }
+    }
+
+    return res.json({
+      ok: true,
+      status: "approved",
+      organization: formatOrganization(updatedOrg.rows[0]),
+      packUpgradeApprovedEmail
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("PATCH /api/admin/organizations/:id/pack-upgrade", err);
+    res.status(500).json({ error: "Erreur validation recharge pack.", detail: err.message || "" });
+  } finally {
+    client.release();
+  }
+});
 
 app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
