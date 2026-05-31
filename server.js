@@ -950,10 +950,12 @@ function uniqueEmails(...values) {
 }
 
 function buildRecipientSet({ primary, cc = [] }) {
-  const all = uniqueEmails(primary, cc);
+  const to = uniqueEmails(primary)[0] || "";
+  const toKey = normalizeEmail(to);
+  const ccList = uniqueEmails(cc).filter((email) => normalizeEmail(email) !== toKey);
   return {
-    to: all[0] || "",
-    cc: all.slice(1).join(",")
+    to,
+    cc: ccList.join(",")
   };
 }
 
@@ -990,52 +992,51 @@ function buildPublicationEmail({ row, recipient }) {
     : `${Math.max(0, Number(row.organization_passations_quota || 0) - Number(row.organization_passations_used || 0)).toLocaleString("fr-FR")} passations restantes`;
   const hello = recipient.name || "";
   const mesAdUrl = buildProtectedFrontendUrl('/mes-autodiagnostics.html');
+  const shareUrl = row.share_url || "";
+  const resultsUrl = row.results_url || "";
 
   return {
     subject: `Votre autodiagnostic est maintenant publié — ${title}`,
     text:
 `Bonjour ${hello},
 
-Votre autodiagnostic est maintenant publié sur Into The Shift et prêt à être diffusé auprès de vos collaborateurs.
+Votre autodiagnostic "${title}" est maintenant publié sur Shift Studio.
 
-Récapitulatif
-- Autodiagnostic : ${title}
-- Entreprise : ${recipient.companyName}
-- Date de lancement : ${startDate}
-- Date de clôture : ${endDate}
-- Passations restantes : ${passationsLabel}${recipient.commanditaireEmail ? `
-- Commanditaire campagne : ${recipient.commanditaireName || "—"} — ${recipient.commanditaireEmail}` : ""}
+La campagne pourra être diffusée à la date de lancement que vous avez déterminée auprès des répondants.
+
+Vous retrouverez dans votre espace :
+- le lien de passation : ${shareUrl || "—"}
+- le lien du dashboard statistiques : ${resultsUrl || "—"}
+- les prochaines ressources de communication mises à disposition.
+
+Entreprise : ${recipient.companyName}
+Dates de campagne : ${startDate} — ${endDate}
+Passations restantes : ${passationsLabel}
 
 Accéder à votre espace Shift Studio :
 ${mesAdUrl}
-
-Le lien de passation sera activable à partir de la date de lancement prévue. Nous allons bientôt vous livrer des ressources dans votre kit de communication : QR code, messages prêts à copier et supports de diffusion.
-
-Si vous souhaitez modifier votre campagne après publication, contactez-nous à contact@intotheshift.io.
 
 L’équipe Into The Shift`,
     html:
 `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
   <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
     <p>Bonjour ${escapeHtml(hello)},</p>
-    <p>Votre autodiagnostic est maintenant publié sur <strong>Into The Shift</strong> et prêt à être diffusé auprès de vos collaborateurs.</p>
-
+    <p>Votre autodiagnostic <strong>${escapeHtml(title)}</strong> est maintenant publié sur <strong>Shift Studio</strong>.</p>
+    <p>La campagne pourra être diffusée à la date de lancement que vous avez déterminée auprès des répondants.</p>
+    <p>Vous retrouverez dans votre espace :</p>
+    <ul>
+      <li>le lien de passation,</li>
+      <li>le lien du dashboard statistiques,</li>
+      <li>les prochaines ressources de communication mises à disposition.</li>
+    </ul>
     <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
-      <div style="font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#60758a;font-weight:bold;margin-bottom:8px">Récapitulatif</div>
-      <p style="margin:0"><strong>Autodiagnostic :</strong> ${escapeHtml(title)}<br>
-      <strong>Entreprise :</strong> ${escapeHtml(recipient.companyName)}<br>
-      <strong>Date de lancement :</strong> ${escapeHtml(startDate)}<br>
-      <strong>Date de clôture :</strong> ${escapeHtml(endDate)}<br>
-      <strong>Passations restantes :</strong> ${escapeHtml(passationsLabel)}${recipient.commanditaireEmail ? `<br><strong>Commanditaire campagne :</strong> ${escapeHtml(recipient.commanditaireName || "—")} — ${escapeHtml(recipient.commanditaireEmail)}` : ""}</p>
+      <p style="margin:0"><strong>Entreprise :</strong> ${escapeHtml(recipient.companyName)}<br>
+      <strong>Dates de campagne :</strong> ${escapeHtml(startDate)} — ${escapeHtml(endDate)}<br>
+      <strong>Passations restantes :</strong> ${escapeHtml(passationsLabel)}</p>
     </div>
-
-    <p style="margin:22px 0 10px">
-      <a href="${escapeHtml(mesAdUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder à mes autodiagnostics</a>
-    </p>
-
-    <p>Le lien de passation sera activable à partir de la date de lancement prévue. Nous allons bientôt vous livrer des ressources dans votre <strong>kit de communication</strong> : QR code, messages prêts à copier et supports de diffusion.</p>
-    <p>Lorsque ces ressources seront disponibles, vous recevrez un email avec un accès sécurisé vers le kit de communication.</p>
-    <p>Si vous souhaitez modifier votre campagne après publication, contactez-nous à <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p>
+    ${shareUrl ? `<p style="margin:22px 0 10px"><a href="${escapeHtml(shareUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au lien de passation</a></p>` : ""}
+    ${resultsUrl ? `<p style="margin:10px 0"><a href="${escapeHtml(resultsUrl)}" style="display:inline-block;background:#eef6fb;color:#0d4c72;border:1px solid #d7e8f1;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au dashboard statistiques</a></p>` : ""}
+    <p style="margin:10px 0 22px"><a href="${escapeHtml(mesAdUrl)}" style="display:inline-block;background:#eef6fb;color:#0d4c72;border:1px solid #d7e8f1;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder à mon espace Shift Studio</a></p>
     <p>L’équipe Into The Shift</p>
   </div>
 </div>`
@@ -1172,12 +1173,12 @@ function getCommunicationRecipient(row) {
 
   const recipients = buildRecipientSet({
     primary: ownerEmail || commanditaire.email,
-    cc: [commanditaire.email, row.partner_email]
+    cc: []
   });
 
   return {
     to: recipients.to,
-    cc: recipients.cc,
+    cc: '',
     name: clientName || commanditaire.name,
     commanditaireName: commanditaire.name,
     commanditaireEmail: commanditaire.email,
@@ -1187,8 +1188,6 @@ function getCommunicationRecipient(row) {
 function buildCommunicationAssetsEmail({ row, recipient, assets }) {
   const title = extractProjectDisplayTitle(row.data || {}, row.title || 'votre autodiagnostic');
   const kitUrl = buildProtectedFrontendUrl(`/kit-communication.html?projectId=${encodeURIComponent(row.id)}`);
-  const assetListText = (assets || []).map((asset) => `- ${asset.file_name}`).join('\n') || '- Ressources disponibles';
-  const assetListHtml = (assets || []).map((asset) => `<li>${escapeHtml(asset.file_name)}</li>`).join('') || '<li>Ressources disponibles</li>';
   const hello = recipient.name || '';
 
   return {
@@ -1196,33 +1195,33 @@ function buildCommunicationAssetsEmail({ row, recipient, assets }) {
     text:
 `Bonjour ${hello},
 
-Vos ressources de communication pour l’autodiagnostic "${title}" sont désormais disponibles dans votre espace Shift Studio.
+Les ressources de communication de votre autodiagnostic "${title}" sont maintenant disponibles.
 
-Entreprise : ${recipient.companyName}
-
-Ressources ajoutées :
-${assetListText}
+Vous pouvez retrouver dans votre kit :
+- QR code,
+- affiches,
+- visuels,
+- messages prêts à diffuser,
+- liens de campagne.
 
 Accéder au kit de communication :
 ${kitUrl}
-
-Vous y retrouverez également le lien de passation, le lien résultats, le QR code et les messages prêts à copier.
 
 L’équipe Into The Shift`,
     html:
 `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
   <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
     <p>Bonjour ${escapeHtml(hello)},</p>
-    <p>Vos ressources de communication pour l’autodiagnostic <strong>${escapeHtml(title)}</strong> sont désormais disponibles dans votre espace Shift Studio.</p>
-    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
-      <p style="margin:0 0 8px"><strong>Entreprise :</strong> ${escapeHtml(recipient.companyName)}</p>
-      <p style="margin:0 0 8px"><strong>Ressources ajoutées :</strong></p>
-      <ul style="margin:0 0 0 18px;padding:0">${assetListHtml}</ul>
-    </div>
-    <p style="margin:22px 0 10px">
-      <a href="${escapeHtml(kitUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au kit de communication</a>
-    </p>
-    <p>Vous y retrouverez également le lien de passation, le lien résultats, le QR code et les messages prêts à copier.</p>
+    <p>Les ressources de communication de votre autodiagnostic <strong>${escapeHtml(title)}</strong> sont maintenant disponibles.</p>
+    <p>Vous pouvez retrouver dans votre kit :</p>
+    <ul>
+      <li>QR code,</li>
+      <li>affiches,</li>
+      <li>visuels,</li>
+      <li>messages prêts à diffuser,</li>
+      <li>liens de campagne.</li>
+    </ul>
+    <p style="margin:22px 0 10px"><a href="${escapeHtml(kitUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au kit de communication</a></p>
     <p>L’équipe Into The Shift</p>
   </div>
 </div>`
@@ -1319,41 +1318,41 @@ async function getCommunicationProjectEmailRow(projectId) {
 function buildCommunicationLinksEmail({ row, recipient }) {
   const title = extractProjectDisplayTitle(row.data || {}, row.title || 'votre autodiagnostic');
   const kitUrl = buildProtectedFrontendUrl(`/kit-communication.html?projectId=${encodeURIComponent(row.id)}`);
-  const startDate = formatDateLongFr(row.campaign_start_date);
-  const endDate = formatDateLongFr(row.campaign_end_date);
   const hello = recipient.name || '';
+  const shareUrl = row.share_url || '';
+  const resultsUrl = row.results_url || '';
 
   return {
     subject: `Liens de campagne mis à jour — ${title}`,
     text:
 `Bonjour ${hello},
 
-Les liens de votre campagne d’autodiagnostic "${title}" ont été mis à jour dans votre espace Shift Studio.
+Les liens de campagne de votre autodiagnostic "${title}" ont été mis à jour.
 
-Entreprise : ${recipient.companyName}
-Date de lancement : ${startDate}
-Date de clôture : ${endDate}
+Merci d’utiliser désormais les nouveaux liens disponibles dans votre espace Shift Studio.
+
+Éléments concernés :
+- lien de passation : ${shareUrl || "—"}
+- lien résultats : ${resultsUrl || "—"}
+- QR code associé.
 
 Accéder au kit de communication :
 ${kitUrl}
-
-Vous y retrouverez les liens à jour, le QR code, les messages prêts à copier et les ressources livrées.
 
 L’équipe Into The Shift`,
     html:
 `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
   <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
     <p>Bonjour ${escapeHtml(hello)},</p>
-    <p>Les liens de votre campagne d’autodiagnostic <strong>${escapeHtml(title)}</strong> ont été mis à jour dans votre espace Shift Studio.</p>
+    <p>Les liens de campagne de votre autodiagnostic <strong>${escapeHtml(title)}</strong> ont été mis à jour.</p>
+    <p>Merci d’utiliser désormais les nouveaux liens disponibles dans votre espace <strong>Shift Studio</strong>.</p>
     <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
-      <p style="margin:0"><strong>Entreprise :</strong> ${escapeHtml(recipient.companyName)}<br>
-      <strong>Date de lancement :</strong> ${escapeHtml(startDate)}<br>
-      <strong>Date de clôture :</strong> ${escapeHtml(endDate)}</p>
+      <p style="margin:0"><strong>Éléments concernés :</strong><br>
+      lien de passation${shareUrl ? ` : <a href="${escapeHtml(shareUrl)}">${escapeHtml(shareUrl)}</a>` : ""}<br>
+      lien résultats${resultsUrl ? ` : <a href="${escapeHtml(resultsUrl)}">${escapeHtml(resultsUrl)}</a>` : ""}<br>
+      QR code associé.</p>
     </div>
-    <p style="margin:22px 0 10px">
-      <a href="${escapeHtml(kitUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au kit de communication</a>
-    </p>
-    <p>Vous y retrouverez les liens à jour, le QR code, les messages prêts à copier et les ressources livrées.</p>
+    <p style="margin:22px 0 10px"><a href="${escapeHtml(kitUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au kit de communication</a></p>
     <p>L’équipe Into The Shift</p>
   </div>
 </div>`
@@ -1585,7 +1584,7 @@ app.get("/health", (req, res) => {
 app.get("/debug-version", (req, res) => {
   res.json({
     ok: true,
-    version: "server-pack-upgrade-separate-emails-v14",
+    version: "server-alert-emails-recipients-links-v15",
     hasRobustProjectDelete: true,
     hasRobustProjectDeleteFkCleanup: true,
     hasNoRecreateDeletedProjectGuard: true,
@@ -4582,7 +4581,7 @@ function buildTransmissionEmailContext(body = {}) {
     payload.recap?.filename ||
     `recapitulatif-shift-studio-${safeCompany}.html`;
 
-  const subject = payload.subject || `Récapitulatif de votre configuration Shift Studio — ${autodiagTitle}`;
+  const subject = payload.subject || `Votre configuration a bien été transmise à Into The Shift — ${autodiagTitle}`;
 
   return {
     payload,
@@ -4725,10 +4724,10 @@ app.post("/api/transmissions/submit", auth, async (req, res) => {
       ] : []
     });
 
-    const adminSubject = `Nouvelle configuration à intégrer — ${ctx.companyName || "Client"} — ${ctx.autodiagTitle}`;
+    const adminSubject = `Alerte transmission client — ${ctx.companyName || "Client"} — ${ctx.autodiagTitle}`;
     const adminHtml = `
       <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
-        <p><strong>Nouvelle configuration transmise depuis Shift Studio.</strong></p>
+        <p><strong>Alerte transmission client : une configuration a été transmise depuis Shift Studio.</strong></p>
         <p>
           <strong>Entreprise :</strong> ${escapeHtml(ctx.companyName || "—")}<br>
           <strong>Contact :</strong> ${escapeHtml(ctx.clientName || "—")}<br>
@@ -4745,7 +4744,7 @@ app.post("/api/transmissions/submit", auth, async (req, res) => {
       to: "contact@intotheshift.io",
       subject: adminSubject,
       text:
-`Nouvelle configuration transmise depuis Shift Studio.
+`Alerte transmission client : une configuration a été transmise depuis Shift Studio.
 
 Entreprise : ${ctx.companyName || "—"}
 Contact : ${ctx.clientName || "—"}

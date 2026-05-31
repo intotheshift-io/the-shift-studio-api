@@ -45,17 +45,29 @@ function shouldSendPackAlert(row, status) {
   return false;
 }
 
+function makeFrontendUrl(path = "") {
+  const base = process.env.FRONTEND_URL || "https://shiftstudio.intotheshift.io";
+  const cleanPath = String(path || "").startsWith("/") ? String(path || "") : `/${path || ""}`;
+  return `${base}${cleanPath}`;
+}
+
+function buildClientFolderUrl(organizationId) {
+  return makeFrontendUrl(`/client-folder.html?id=${encodeURIComponent(organizationId)}`);
+}
+
 function getPackAlertRecipients(row, adminEmail) {
   const creatorName = `${row.creator_first_name || ""} ${row.creator_last_name || ""}`.trim() || row.creator_company_name || row.creator_email || "";
   const memberEmails = Array.isArray(row.organization_user_emails) ? row.organization_user_emails : [];
-  const clientEmails = uniqueEmails(row.contact_email, row.creator_email, row.partner_email, memberEmails);
+  const primaryClientEmail = row.creator_email || row.contact_email || memberEmails[0] || "";
+  const ccEmails = uniqueEmails(row.partner_email, memberEmails, row.contact_email).filter((email) => normalizeEmail(email) !== normalizeEmail(primaryClientEmail));
 
   return {
     internalTo: adminEmail || DEFAULT_ADMIN_EMAIL,
-    clientTo: clientEmails[0] || "",
-    clientCc: clientEmails.slice(1).join(","),
+    clientTo: primaryClientEmail,
+    clientCc: ccEmails.join(","),
     creatorName,
-    clientName: row.name || "Client sans nom"
+    clientName: row.name || "Client sans nom",
+    dashboardUrl: buildClientFolderUrl(row.id)
   };
 }
 
@@ -65,7 +77,7 @@ function buildPackAlertInternalEmail({ row, status, recipient }) {
   const clientName = recipient.clientName;
 
   const recommendation = status.type === "empty"
-    ? "Action recommandée : recharger le pack avant toute nouvelle publication ou prolongation de campagne."
+    ? "Action recommandée : recharger le pack si des campagnes sont en cours ou rendez-vous sur votre dashboard client."
     : "Action recommandée : anticiper une recharge si une campagne est en cours ou si une nouvelle publication est prévue.";
 
   return {
@@ -107,48 +119,49 @@ L’équipe Into The Shift`,
 }
 
 function buildPackAlertClientEmail({ row, status, recipient }) {
-  const remainingPercent = status.quota > 0 ? Math.round(status.remainingRate * 100) : 0;
   const clientName = recipient.clientName;
-  const subjectPrefix = status.type === "empty"
-    ? "Votre pack de passations est épuisé"
+  const subjectPrefix = status.type === "empty" ? "Pack épuisé" : status.type === "critical" ? "Pack critique" : "Pack bientôt épuisé";
+  const messageIntro = status.type === "empty"
+    ? `Le pack du cockpit client "${clientName}" est maintenant épuisé.\n\nAucun de vos autodiagnostics n’est disponible désormais.`
     : status.type === "critical"
-      ? "Votre pack de passations arrive à un niveau critique"
-      : "Votre pack de passations arrive bientôt à épuisement";
-
-  const nextStep = status.type === "empty"
-    ? "Nous allons revenir vers vous rapidement pour vous proposer une recharge adaptée avant toute nouvelle publication."
-    : "Nous vous recommandons d’anticiper une recharge si une campagne est en cours ou si vous prévoyez un nouvel autodiagnostic.";
+      ? `Pack critique pour le cockpit client "${clientName}".\n\nLe nombre de passations restantes est très faible.`
+      : `Pack bientôt épuisé pour le cockpit client "${clientName}".`;
+  const action = status.type === "empty"
+    ? "recharger le pack si des campagnes sont en cours ou rendez-vous sur votre dashboard client."
+    : status.type === "critical"
+      ? "anticiper immédiatement une recharge."
+      : "anticiper une recharge si une campagne est en cours ou si une nouvelle publication est prévue.";
 
   return {
     subject: `${subjectPrefix} — ${clientName}`,
     text:
 `Bonjour,
 
-Votre solde de passations Into The Shift nécessite votre attention.
+${messageIntro}
 
-Client : ${clientName}
 Passations utilisées : ${status.used.toLocaleString("fr-FR")}
 Quota : ${status.quota.toLocaleString("fr-FR")}
-Passations restantes : ${status.remaining.toLocaleString("fr-FR")} (${remainingPercent}%)
+Passations restantes : ${status.remaining.toLocaleString("fr-FR")}
 
-${nextStep}
+Dashboard client :
+${recipient.dashboardUrl}
 
-Pour toute question, vous pouvez répondre directement à cet email.
+Action recommandée :
+${action}
 
 L’équipe Into The Shift`,
     html:
 `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
   <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
     <p>Bonjour,</p>
-    <p>Votre solde de passations <strong>Into The Shift</strong> nécessite votre attention.</p>
+    <p>${escapeHtml(messageIntro).replaceAll("\n\n", "</p><p>")}</p>
     <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
-      <p style="margin:0"><strong>Client :</strong> ${escapeHtml(clientName)}<br>
-      <strong>Passations utilisées :</strong> ${escapeHtml(status.used.toLocaleString("fr-FR"))}<br>
+      <p style="margin:0"><strong>Passations utilisées :</strong> ${escapeHtml(status.used.toLocaleString("fr-FR"))}<br>
       <strong>Quota :</strong> ${escapeHtml(status.quota.toLocaleString("fr-FR"))}<br>
-      <strong>Passations restantes :</strong> ${escapeHtml(status.remaining.toLocaleString("fr-FR"))} (${escapeHtml(String(remainingPercent))}%)</p>
+      <strong>Passations restantes :</strong> ${escapeHtml(status.remaining.toLocaleString("fr-FR"))}</p>
     </div>
-    <p>${escapeHtml(nextStep)}</p>
-    <p>Pour toute question, vous pouvez répondre directement à cet email.</p>
+    <p style="margin:22px 0 10px"><a href="${escapeHtml(recipient.dashboardUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au dashboard client</a></p>
+    <p><strong>Action recommandée :</strong><br>${escapeHtml(action)}</p>
     <p>L’équipe Into The Shift</p>
   </div>
 </div>`
@@ -196,13 +209,12 @@ function getPackUpgradeRequestRecipients(row, adminEmail) {
     `${row.user_first_name || ""} ${row.user_last_name || ""}`.trim() ||
     row.user_email ||
     "—";
-  const requesterEmail = row.contact_email || commanditaire.email || row.user_email || "";
-  const clientRecipients = uniqueEmails(row.contact_email, commanditaire.email, row.user_email, row.partner_email);
+  const requesterEmail = row.user_email || row.contact_email || commanditaire.email || "";
 
   return {
     internalTo: adminEmail || DEFAULT_ADMIN_EMAIL,
-    clientTo: clientRecipients[0] || "",
-    clientCc: clientRecipients.slice(1).join(","),
+    clientTo: requesterEmail,
+    clientCc: "",
     clientName,
     requesterName,
     requesterEmail,
@@ -272,39 +284,34 @@ L’équipe Into The Shift`,
 function buildPackUpgradeClientEmail({ row, request, recipient }) {
   const title = row.display_title || row.title || "votre autodiagnostic";
   const requestedPack = formatPackChoiceLabel(request);
+  const currentRemaining = request.currentRemaining === null
+    ? "Illimité"
+    : `${Math.max(0, Number(request.currentRemaining ?? 0)).toLocaleString("fr-FR")} passations restantes`;
   const hello = recipient.requesterName && recipient.requesterName !== "—" ? recipient.requesterName : "";
-  const mesAdUrl = `${row.frontend_url || "https://shiftstudio.intotheshift.io"}/mes-autodiagnostics.html`;
 
   return {
-    subject: `Votre demande de pack complémentaire a bien été reçue — ${recipient.clientName}`,
+    subject: `Votre demande de recharge a bien été prise en compte`,
     text:
 `Bonjour ${hello},
 
-Nous avons bien reçu votre demande de pack complémentaire pour l’autodiagnostic "${title}".
+Votre demande de recharge de pack pour l’autodiagnostic "${title}" a bien été enregistrée.
 
-Récapitulatif
-- Client : ${recipient.clientName}
-- Pack demandé : ${requestedPack}
+Pack demandé : ${requestedPack}
+Solde actuel : ${currentRemaining}
 
-Notre équipe va revenir vers vous avec les éléments commerciaux nécessaires. La recharge sera activée après validation.
-
-Accéder à votre espace Shift Studio :
-${mesAdUrl}
+Notre équipe revient vers vous rapidement pour finaliser cette recharge.
 
 L’équipe Into The Shift`,
     html:
 `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
   <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
     <p>Bonjour ${escapeHtml(hello)},</p>
-    <p>Nous avons bien reçu votre <strong>demande de pack complémentaire</strong> pour l’autodiagnostic <strong>${escapeHtml(title)}</strong>.</p>
+    <p>Votre demande de recharge de pack pour l’autodiagnostic <strong>${escapeHtml(title)}</strong> a bien été enregistrée.</p>
     <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
-      <p style="margin:0"><strong>Client :</strong> ${escapeHtml(recipient.clientName)}<br>
-      <strong>Pack demandé :</strong> ${escapeHtml(requestedPack)}</p>
+      <p style="margin:0"><strong>Pack demandé :</strong> ${escapeHtml(requestedPack)}<br>
+      <strong>Solde actuel :</strong> ${escapeHtml(currentRemaining)}</p>
     </div>
-    <p>Notre équipe va revenir vers vous avec les éléments commerciaux nécessaires. La recharge sera activée après validation.</p>
-    <p style="margin:22px 0 10px">
-      <a href="${escapeHtml(mesAdUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder à mes autodiagnostics</a>
-    </p>
+    <p>Notre équipe revient vers vous rapidement pour finaliser cette recharge.</p>
     <p>L’équipe Into The Shift</p>
   </div>
 </div>`

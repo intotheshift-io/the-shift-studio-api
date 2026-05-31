@@ -39,8 +39,10 @@ function uniqueEmails(...values) {
 }
 
 function buildRecipientSet({ primary, cc = [] }) {
-  const all = uniqueEmails(primary, cc);
-  return { to: all[0] || "", cc: all.slice(1).join(",") };
+  const to = uniqueEmails(primary)[0] || "";
+  const toKey = normalizeEmail(to);
+  const ccList = uniqueEmails(cc).filter((email) => normalizeEmail(email) !== toKey);
+  return { to, cc: ccList.join(",") };
 }
 
 function getProjectParamData(data = {}) {
@@ -121,28 +123,31 @@ function getCampaignAlertRecipient(row) {
   const commanditaire = extractProjectCommanditaire(row.data || {});
   const clientEmail = row.contact_email || row.user_email || "";
   const clientName = row.contact_name || row.user_company_name || `${row.user_first_name || ""} ${row.user_last_name || ""}`.trim() || commanditaire.name || "";
-  const recipients = buildRecipientSet({ primary: clientEmail || commanditaire.email || row.partner_email, cc: [commanditaire.email, row.partner_email] });
+  const recipients = buildRecipientSet({ primary: clientEmail || commanditaire.email, cc: [commanditaire.email] });
   return { to: recipients.to, cc: recipients.cc, name: clientName };
 }
 
 function buildCampaignAlertEmail({ type, row, daysBefore, recipientName }) {
   const title = row.title || "votre autodiagnostic";
   const endDate = formatDateLongFr(row.campaign_end_date);
-  const clientName = row.organization_name || row.user_company_name || "—";
   const hello = recipientName || "";
+  const shareUrl = row.share_url || "";
+  const resultsUrl = row.results_url || "";
+  const linksText = `${shareUrl ? `\nLien de passation : ${shareUrl}` : ""}${resultsUrl ? `\nLien du dashboard statistiques : ${resultsUrl}` : ""}`;
+  const linksHtml = `${shareUrl ? `<p style="margin:18px 0 8px"><a href="${escapeHtml(shareUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au lien de passation</a></p>` : ""}${resultsUrl ? `<p style="margin:8px 0 18px"><a href="${escapeHtml(resultsUrl)}" style="display:inline-block;background:#eef6fb;color:#0d4c72;border:1px solid #d7e8f1;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au dashboard statistiques</a></p>` : ""}`;
 
   if (type === "unpublished") {
     return {
-      subject: `Campagne dépubliée — ${title}`,
-      text: `Bonjour ${hello},\n\nLa campagne de votre simulateur comportemental "${title}" est maintenant terminée et a été dépubliée.\n\nClient concerné : ${clientName}\nDate de fin de campagne : ${endDate}\n\nLe lien de passation n’est plus mis en avant. L’accès aux résultats reste disponible.\n\nPour relancer ou prolonger la campagne, contactez contact@intotheshift.io.\n\nL’équipe Into The Shift`,
-      html: `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.5"><p>Bonjour ${escapeHtml(hello)},</p><p>La campagne d’autodiagnostic <strong>${escapeHtml(title)}</strong> est maintenant terminée et a été dépubliée.</p><p><strong>Client concerné :</strong> ${escapeHtml(clientName)}<br><strong>Date de fin de campagne :</strong> ${escapeHtml(endDate)}</p><p>Le lien de passation n’est plus mis en avant. L’accès aux résultats reste disponible si l’URL résultats a été renseignée.</p><p>Pour relancer ou prolonger la campagne, contactez <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p><p>L’équipe Into The Shift</p></div>`
+      subject: `Votre campagne est maintenant terminée — ${title}`,
+      text: `Bonjour ${hello},\n\nLa campagne de votre autodiagnostic "${title}" est maintenant terminée.\n\nLes résultats restent accessibles depuis votre espace Shift Studio.\n\nDate de clôture : ${endDate}${resultsUrl ? `\n\nLien du dashboard statistiques : ${resultsUrl}` : ""}\n\nMerci pour votre confiance.\n\nL’équipe Into The Shift`,
+      html: `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px"><div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px"><p>Bonjour ${escapeHtml(hello)},</p><p>La campagne de votre autodiagnostic <strong>${escapeHtml(title)}</strong> est maintenant terminée.</p><p>Les résultats restent accessibles depuis votre espace <strong>Shift Studio</strong>.</p><p><strong>Date de clôture :</strong> ${escapeHtml(endDate)}</p>${resultsUrl ? `<p style="margin:22px 0 10px"><a href="${escapeHtml(resultsUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au dashboard statistiques</a></p>` : ""}<p>Merci pour votre confiance.</p><p>L’équipe Into The Shift</p></div></div>`
     };
   }
 
   return {
-    subject: `Votre autodiagnostic se termine dans ${daysBefore} jours — ${title}`,
-    text: `Bonjour ${hello},\n\nVotre campagne d’autodiagnostic "${title}" se termine dans ${daysBefore} jours.\n\nClient concerné : ${clientName}\nDate de fin prévue : ${endDate}\n\nAprès cette date, le lien de passation ne sera plus mis en avant. L’accès aux résultats restera disponible.\n\nPour prolonger la campagne ou modifier les dates, contactez contact@intotheshift.io.\n\nL’équipe Into The Shift`,
-    html: `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.5"><p>Bonjour ${escapeHtml(hello)},</p><p>Votre campagne d’autodiagnostic <strong>${escapeHtml(title)}</strong> se termine dans <strong>${daysBefore} jours</strong>.</p><p><strong>Client concerné :</strong> ${escapeHtml(clientName)}<br><strong>Date de fin prévue :</strong> ${escapeHtml(endDate)}</p><p>Après cette date, le lien de passation ne sera plus accessible. L’accès aux résultats restera disponible.</p><p>Pour prolonger la campagne ou modifier les dates, contactez <a href="mailto:contact@intotheshift.io">contact@intotheshift.io</a>.</p><p>L’équipe Into The Shift</p></div>`
+    subject: `Votre campagne se termine bientôt — ${title}`,
+    text: `Bonjour ${hello},\n\nLa campagne de votre autodiagnostic "${title}" arrive bientôt à échéance.\n\nNous vous recommandons d’adresser le lien de votre autodiagnostic au plus grand nombre afin d’obtenir un maximum de participation.\n\nDate de clôture : ${endDate}${linksText}\n\nL’équipe Into The Shift`,
+    html: `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px"><div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px"><p>Bonjour ${escapeHtml(hello)},</p><p>La campagne de votre autodiagnostic <strong>${escapeHtml(title)}</strong> arrive bientôt à échéance.</p><p>Nous vous recommandons d’adresser le lien de votre autodiagnostic au plus grand nombre afin d’obtenir un maximum de participation.</p><p><strong>Date de clôture :</strong> ${escapeHtml(endDate)}</p>${linksHtml}<p>L’équipe Into The Shift</p></div></div>`
   };
 }
 
@@ -223,7 +228,7 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
         await pool.query(`UPDATE projects SET end_alert_7_sent_at = NOW() WHERE id = $1`, [row.id]);
       }
 
-      sent.push({ id: row.id, to: recipient.to, type, daysBefore: type === "unpublished" ? null : daysBefore });
+      sent.push({ id: row.id, to: recipient.to, cc: recipient.cc || "", type, daysBefore: type === "unpublished" ? null : daysBefore });
     }
 
     return { sent, skipped };
