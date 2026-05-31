@@ -2398,7 +2398,8 @@ app.get("/api/projects/:id", auth, async (req, res) => {
          o.name AS organization_name,
          o.passations_pack AS organization_passations_pack,
          o.passations_quota AS organization_passations_quota,
-         o.passations_used AS organization_passations_used
+         o.passations_used AS organization_passations_used,
+         o.pack_upgrade_status AS organization_pack_upgrade_status
        FROM projects p
        LEFT JOIN organizations o ON o.id = p.organization_id
        WHERE p.id = $1
@@ -3973,7 +3974,8 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
          p.*,
          o.passations_pack AS organization_passations_pack,
          o.passations_quota AS organization_passations_quota,
-         o.passations_used AS organization_passations_used
+         o.passations_used AS organization_passations_used,
+         o.pack_upgrade_status AS organization_pack_upgrade_status
        FROM projects p
        LEFT JOIN organizations o ON o.id = p.organization_id
        WHERE p.id = $1
@@ -4153,7 +4155,8 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
          p.publication_email_sent_at,
          o.passations_pack AS organization_passations_pack,
          o.passations_quota AS organization_passations_quota,
-         o.passations_used AS organization_passations_used
+         o.passations_used AS organization_passations_used,
+         o.pack_upgrade_status AS organization_pack_upgrade_status
        FROM projects p
        LEFT JOIN organizations o ON o.id = p.organization_id
        WHERE p.id = $1
@@ -4174,7 +4177,19 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
 
     if (finalStatus === "published") {
       const packRequest = getProjectPackUpgradeRequest(existing.data || {}, existing);
-      if (packRequest.requested && packRequest.status === "pending") {
+      const organizationUpgradeStatus = String(
+        existing.organization_pack_upgrade_status || ""
+      ).toLowerCase();
+
+      const hasApprovedUpgrade =
+        packRequest.status === "approved" ||
+        organizationUpgradeStatus === "approved";
+
+      if (
+        packRequest.requested &&
+        packRequest.status === "pending" &&
+        !hasApprovedUpgrade
+      ) {
         return res.status(409).json({
           error: "Recharge pack à valider avant publication.",
           code: "PACK_UPGRADE_PENDING",
