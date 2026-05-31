@@ -122,15 +122,15 @@ function buildPackAlertClientEmail({ row, status, recipient }) {
   const clientName = recipient.clientName;
   const subjectPrefix = status.type === "empty" ? "Pack épuisé" : status.type === "critical" ? "Pack critique" : "Pack bientôt épuisé";
   const messageIntro = status.type === "empty"
-    ? `Le pack du cockpit client "${clientName}" est maintenant épuisé.\n\nAucun de vos autodiagnostics n’est disponible désormais.`
+    ? `Le pack de passations de "${clientName}" est maintenant épuisé.\n\nAucun de vos autodiagnostics n’est disponible désormais.`
     : status.type === "critical"
-      ? `Pack critique pour le cockpit client "${clientName}".\n\nLe nombre de passations restantes est très faible.`
-      : `Pack bientôt épuisé pour le cockpit client "${clientName}".`;
+      ? `Pack critique pour "${clientName}".\n\nLe nombre de passations restantes est très faible.`
+      : `Pack bientôt épuisé pour "${clientName}".`;
   const action = status.type === "empty"
     ? "recharger le pack si des campagnes sont en cours ou rendez-vous sur votre dashboard client."
     : status.type === "critical"
       ? "anticiper immédiatement une recharge."
-      : "anticiper une recharge si une campagne est en cours ou si une nouvelle publication est prévue.";
+      : "Rechargez votre pack si une campagne est en cours ou si une nouvelle publication est prévue.";
 
   return {
     subject: `${subjectPrefix} — ${clientName}`,
@@ -294,19 +294,19 @@ function buildPackUpgradeClientEmail({ row, request, recipient }) {
     text:
 `Bonjour ${hello},
 
-Votre demande de recharge de pack pour l’autodiagnostic "${title}" a bien été enregistrée.
+Votre demande de recharge de pack a bien été enregistrée.
 
 Pack demandé : ${requestedPack}
 Solde actuel : ${currentRemaining}
 
-Notre équipe revient vers vous rapidement pour finaliser cette recharge.
+Notre équipe revient vers vous rapidement pour valider cette recharge.
 
 L’équipe Into The Shift`,
     html:
 `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
   <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
     <p>Bonjour ${escapeHtml(hello)},</p>
-    <p>Votre demande de recharge de pack pour l’autodiagnostic <strong>${escapeHtml(title)}</strong> a bien été enregistrée.</p>
+    <p>Votre demande de recharge de pack a bien été enregistrée.</p>
     <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
       <p style="margin:0"><strong>Pack demandé :</strong> ${escapeHtml(requestedPack)}<br>
       <strong>Solde actuel :</strong> ${escapeHtml(currentRemaining)}</p>
