@@ -761,20 +761,24 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
 
     await pool.query(`UPDATE organizations SET ${column} = NOW() WHERE id = $1`, [row.id]);
 
-    await notifyClientOrganization(row.id, {
-      type: status.type === "empty" ? "pack_empty" : status.type === "critical" ? "pack_critical" : "pack_low",
-      title: status.type === "empty" ? "Pack épuisé" : status.type === "critical" ? "Pack critique" : "Pack bientôt épuisé",
-      message: `Il reste ${status.remaining.toLocaleString("fr-FR")} passation${status.remaining > 1 ? "s" : ""} sur ${status.quota.toLocaleString("fr-FR")} pour ${row.name || "votre organisation"}.`,
-      actionUrl: "/account.html?tab=quota",
-      metadata: { email: "pack_alert", remaining: status.remaining, quota: status.quota, used: status.used }
-    });
-    await notifyAdmin({
-      type: status.type === "empty" ? "pack_empty" : status.type === "critical" ? "pack_critical" : "pack_low",
-      title: `${status.label} — ${row.name || "Client"}`,
-      message: `Passations restantes : ${status.remaining.toLocaleString("fr-FR")} / ${status.quota.toLocaleString("fr-FR")}.`,
-      actionUrl: `/client-folder.html?id=${encodeURIComponent(row.id)}`,
-      metadata: { email: "pack_alert_internal", organizationId: row.id }
-    });
+    if (clientMailResult.sent) {
+      await notifyClientOrganization(row.id, {
+        type: status.type === "empty" ? "pack_empty" : status.type === "critical" ? "pack_critical" : "pack_low",
+        title: status.type === "empty" ? "Pack épuisé" : status.type === "critical" ? "Pack critique" : "Pack bientôt épuisé",
+        message: `Il reste ${status.remaining.toLocaleString("fr-FR")} passation${status.remaining > 1 ? "s" : ""} sur ${status.quota.toLocaleString("fr-FR")} pour ${row.name || "votre organisation"}.`,
+        actionUrl: "/account.html?tab=quota",
+        metadata: { email: "pack_alert", remaining: status.remaining, quota: status.quota, used: status.used }
+      });
+    }
+    if (internalMailResult.sent) {
+      await notifyAdmin({
+        type: status.type === "empty" ? "pack_empty" : status.type === "critical" ? "pack_critical" : "pack_low",
+        title: `${status.label} — ${row.name || "Client"}`,
+        message: `Passations restantes : ${status.remaining.toLocaleString("fr-FR")} / ${status.quota.toLocaleString("fr-FR")}.`,
+        actionUrl: `/client-folder.html?id=${encodeURIComponent(row.id)}`,
+        metadata: { email: "pack_alert_internal", organizationId: row.id }
+      });
+    }
 
     return {
       sent: true,

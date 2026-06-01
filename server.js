@@ -1495,6 +1495,13 @@ async function sendCommunicationAssetsEmail(projectId) {
 
   if (mailResult.sent) {
     await pool.query(`UPDATE projects SET communication_assets_email_sent_at = NOW() WHERE id = $1`, [projectId]);
+    await createClientNotificationForProject(projectId, {
+      type: "communication_assets",
+      title: "Ressources de communication disponibles",
+      message: `Les ressources de communication de votre autodiagnostic « ${extractProjectDisplayTitle(row.data || {}, row.title || "votre autodiagnostic")} » sont maintenant disponibles.`,
+      actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(projectId)}`,
+      metadata: { email: "communication_assets" }
+    });
   }
 
   return {
@@ -1707,7 +1714,7 @@ const packAlerts = createPackAlerts({
   adminEmail: process.env.ALERT_ADMIN_EMAIL || "contact@intotheshift.io",
   createNotification
 });
-const { processPackAlerts, runPackAlerts, sendPackAlertForOrganization, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail, sendPackRepublishedAfterRechargeEmail } = packAlerts;
+const { processPackAlerts, runPackAlerts, sendPackExpiryAlertForRow, sendPackAlertForOrganization, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail, sendPackRepublishedAfterRechargeEmail } = packAlerts;
 
 async function runOperationalAlerts() {
   const campaign = await runCampaignAlerts();
@@ -1931,6 +1938,7 @@ app.get("/debug-version", (req, res) => {
     hasPackAlerts: true,
     hasImmediateManualPackAlerts: true,
     hasOperationalAlerts: true,
+    hasNoPackUpgradeEmailFromProjectAutosave: true,
     hasCommunicationAssets: true,
     hasProjectCommanditaireEmails: true,
     hasCommunicationLinksNotify: true,
@@ -2630,7 +2638,6 @@ app.post("/api/projects", auth, async (req, res) => {
           sourceProjectId: updateResult.rows[0].id,
           request: packUpgradeRequest
         });
-        await notifyPackUpgradeRequestIfNeeded(updateResult.rows[0].id);
       }
       return res.json({ project: updateResult.rows[0] });
     }
@@ -2671,7 +2678,6 @@ app.post("/api/projects", auth, async (req, res) => {
       sourceProjectId: result.rows[0].id,
       request: packUpgradeRequest
     });
-    await notifyPackUpgradeRequestIfNeeded(result.rows[0].id);
   }
 
   res.json({ project: result.rows[0] });
@@ -3658,6 +3664,7 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
     }
 
     let packAlert = { sent: false, reason: "NOT_TRIGGERED" };
+    let packExpiryAlert = { sent: false, reason: "NOT_TRIGGERED" };
     if (typeof sendPackAlertForOrganization === "function") {
       try {
         packAlert = await sendPackAlertForOrganization(id);
@@ -3666,10 +3673,19 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
         packAlert = { sent: false, reason: "SEND_FAILED" };
       }
     }
+    if (typeof sendPackExpiryAlertForRow === "function") {
+      try {
+        packExpiryAlert = await sendPackExpiryAlertForRow(updatedOrganization, { mode: "all" });
+      } catch (expiryErr) {
+        console.error("Erreur alerte expiration pack après mise à jour manuelle", expiryErr);
+        packExpiryAlert = { sent: false, reason: "SEND_FAILED" };
+      }
+    }
 
     res.json({
       organization: formatOrganization(result.rows[0]),
       packAlert,
+      packExpiryAlert,
       packRepublishedEmail,
       republishedProjectsCount: republishedProjects.length
     });
