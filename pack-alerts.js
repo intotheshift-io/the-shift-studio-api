@@ -324,6 +324,100 @@ L’équipe Into The Shift`,
   };
 }
 
+function buildProjectLinksListText(projects = []) {
+  const list = Array.isArray(projects) ? projects : [];
+  if (!list.length) return "Aucune campagne republiée.";
+  return list.map((project, index) => {
+    const title = project.title || project.display_title || `Campagne ${index + 1}`;
+    const shareUrl = project.share_url || project.shareUrl || "—";
+    const resultsUrl = project.results_url || project.resultsUrl || "—";
+    return `- ${title}\n  Lien de passation : ${shareUrl}\n  Lien résultats : ${resultsUrl}`;
+  }).join("\n");
+}
+
+function buildProjectLinksListHtml(projects = []) {
+  const list = Array.isArray(projects) ? projects : [];
+  if (!list.length) return `<p>Aucune campagne republiée.</p>`;
+  return `<ul style="padding-left:18px;margin:12px 0">${list.map((project, index) => {
+    const title = project.title || project.display_title || `Campagne ${index + 1}`;
+    const shareUrl = project.share_url || project.shareUrl || "";
+    const resultsUrl = project.results_url || project.resultsUrl || "";
+    return `<li style="margin:0 0 12px"><strong>${escapeHtml(title)}</strong><br>${shareUrl ? `Lien de passation : <a href="${escapeHtml(shareUrl)}">${escapeHtml(shareUrl)}</a><br>` : `Lien de passation : —<br>`}${resultsUrl ? `Lien résultats : <a href="${escapeHtml(resultsUrl)}">${escapeHtml(resultsUrl)}</a>` : `Lien résultats : —`}</li>`;
+  }).join("")}</ul>`;
+}
+
+function buildPackRepublishedClientEmail({ row, recipient, projects = [] }) {
+  const clientName = recipient.clientName;
+  const count = Array.isArray(projects) ? projects.length : 0;
+  const accountUrl = buildAccountPackUrl();
+  return {
+    subject: `Vos campagnes ont été republiées après recharge du pack — ${clientName}`,
+    text:
+`Bonjour,
+
+Votre pack de crédits a été rechargé. Les campagnes qui avaient été automatiquement dépubliées à cause de l’expiration du pack ont été republiées.
+
+Campagnes republiées : ${count}
+
+${buildProjectLinksListText(projects)}
+
+Accéder à mon compte :
+${accountUrl}
+
+L’équipe Into The Shift`,
+    html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
+    <p>Bonjour,</p>
+    <p>Votre pack de crédits a été rechargé. Les campagnes qui avaient été automatiquement dépubliées à cause de l’expiration du pack ont été <strong>republiées</strong>.</p>
+    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
+      <p style="margin:0"><strong>Campagnes republiées :</strong> ${escapeHtml(String(count))}</p>
+    </div>
+    ${buildProjectLinksListHtml(projects)}
+    <p style="margin:22px 0 10px"><a href="${escapeHtml(accountUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder à mon compte</a></p>
+    <p>L’équipe Into The Shift</p>
+  </div>
+</div>`
+  };
+}
+
+function buildPackRepublishedInternalEmail({ row, recipient, projects = [] }) {
+  const clientName = recipient.clientName;
+  const count = Array.isArray(projects) ? projects.length : 0;
+  return {
+    subject: `Campagnes republiées après recharge pack — ${clientName}`,
+    text:
+`Bonjour,
+
+Le pack de crédits du client a été rechargé. Les campagnes dépubliées automatiquement pour pack expiré ont été republiées.
+
+Client : ${clientName}
+Campagnes republiées : ${count}
+Contact client : ${row.contact_name || "—"} ${row.contact_email ? `<${row.contact_email}>` : ""}
+
+${buildProjectLinksListText(projects)}
+
+Alerte interne Into The Shift.
+
+L’équipe Into The Shift`,
+    html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
+    <p>Bonjour,</p>
+    <p><strong>Le pack de crédits du client a été rechargé.</strong> Les campagnes dépubliées automatiquement pour pack expiré ont été republiées.</p>
+    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
+      <p style="margin:0"><strong>Client :</strong> ${escapeHtml(clientName)}<br>
+      <strong>Campagnes republiées :</strong> ${escapeHtml(String(count))}<br>
+      <strong>Contact client :</strong> ${escapeHtml(row.contact_name || "—")} ${row.contact_email ? `— ${escapeHtml(row.contact_email)}` : ""}</p>
+    </div>
+    ${buildProjectLinksListHtml(projects)}
+    <p><strong>Alerte interne Into The Shift.</strong></p>
+    <p>L’équipe Into The Shift</p>
+  </div>
+</div>`
+  };
+}
+
 function formatPackChoiceLabel(request = {}) {
   if (request.unlimited || request.choice === "illimite") return "Pack illimité";
   const amount = Number(request.amount || request.choice || 0);
@@ -680,15 +774,26 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     if (!shouldSendPackExpiryAlert(row, type)) return { sent: false, skipped: true, id: row.id, type, reason: "ALREADY_SENT" };
 
     let unpublishedCount = 0;
+    let unpublishedProjects = [];
     if (type === "expired") {
       const result = await pool.query(
         `UPDATE projects
-         SET status = 'unpublished', unpublished_at = NOW(), updated_at = NOW()
+         SET status = 'unpublished',
+             unpublished_at = NOW(),
+             unpublished_alert_sent_at = COALESCE(unpublished_alert_sent_at, NOW()),
+             data = COALESCE(data, '{}'::jsonb) || jsonb_build_object(
+               'packExpiredAutoUnpublished', true,
+               'pack_expired_auto_unpublished', true,
+               'packExpiredAutoUnpublishedAt', NOW(),
+               'pack_expired_auto_unpublished_at', NOW()
+             ),
+             updated_at = NOW()
          WHERE organization_id = $1 AND status = 'published'
-         RETURNING id`,
+         RETURNING id, title, share_url, results_url, campaign_start_date, campaign_end_date, data`,
         [row.id]
       );
       unpublishedCount = result.rowCount || 0;
+      unpublishedProjects = result.rows || [];
     }
 
     const recipient = getPackAlertRecipients(row, adminEmail);
@@ -1220,10 +1325,82 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     };
   }
 
+  async function sendPackRepublishedAfterRechargeEmail({ organizationId, projects = [] } = {}) {
+    const orgId = Number(organizationId);
+    const republishedProjects = Array.isArray(projects) ? projects : [];
+    if (!Number.isInteger(orgId) || orgId <= 0) return { sent: false, reason: "INVALID_ORGANIZATION" };
+    if (!republishedProjects.length) return { sent: false, reason: "NO_REPUBLISHED_PROJECTS" };
+
+    const result = await pool.query(`
+      SELECT
+        o.id,
+        o.name,
+        o.contact_name,
+        o.contact_email,
+        o.passations_pack,
+        o.passations_quota,
+        o.passations_used,
+        creator.email AS creator_email,
+        creator.first_name AS creator_first_name,
+        creator.last_name AS creator_last_name,
+        creator.company_name AS creator_company_name,
+        creator.role AS creator_role,
+        partner.email AS partner_email,
+        COALESCE(array_agg(DISTINCT ou_user.email) FILTER (WHERE ou_user.email IS NOT NULL), '{}') AS organization_user_emails
+      FROM organizations o
+      LEFT JOIN users creator ON creator.id = o.created_by
+      LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+      LEFT JOIN organization_users ou ON ou.organization_id = o.id
+      LEFT JOIN users ou_user ON ou_user.id = ou.user_id AND COALESCE(ou_user.status, 'active') = 'active'
+      WHERE o.id = $1 AND o.type = 'client'
+      GROUP BY o.id, creator.id, partner.id
+      LIMIT 1
+    `, [orgId]);
+
+    const row = result.rows[0];
+    if (!row) return { sent: false, reason: "ORGANIZATION_NOT_FOUND" };
+
+    const recipient = getPackAlertRecipients(row, adminEmail);
+    const commanditaireEmails = getCommanditaireEmailsFromProjectData(republishedProjects.map(project => project.data || {}));
+    const clientCc = uniqueEmails(recipient.clientCc, commanditaireEmails).filter(email => normalizeEmail(email) !== normalizeEmail(recipient.clientTo)).join(",");
+    const clientRecipient = { ...recipient, clientCc };
+
+    const internalMail = buildPackRepublishedInternalEmail({ row, recipient, projects: republishedProjects });
+    const internalMailResult = await sendTransactionalEmail({
+      to: recipient.internalTo,
+      subject: internalMail.subject,
+      text: internalMail.text,
+      html: internalMail.html
+    });
+
+    let clientMailResult = { sent: false, reason: "NO_CLIENT_RECIPIENT" };
+    if (clientRecipient.clientTo) {
+      const clientMail = buildPackRepublishedClientEmail({ row, recipient: clientRecipient, projects: republishedProjects });
+      clientMailResult = await sendTransactionalEmail({
+        to: clientRecipient.clientTo,
+        cc: clientRecipient.clientCc || undefined,
+        subject: clientMail.subject,
+        text: clientMail.text,
+        html: clientMail.html
+      });
+    }
+
+    return {
+      sent: internalMailResult.sent === true || clientMailResult.sent === true,
+      internalEmailSent: internalMailResult.sent === true,
+      clientEmailSent: clientMailResult.sent === true,
+      internalTo: recipient.internalTo,
+      clientTo: clientRecipient.clientTo || "",
+      clientCc: clientRecipient.clientCc || "",
+      republishedCount: republishedProjects.length,
+      reason: internalMailResult.reason || clientMailResult.reason || ""
+    };
+  }
+
   async function runPackAlerts() {
     const pack = await processPackAlerts({ mode: "all" });
     return { pack, totalSent: pack.sent.length, totalSkipped: pack.skipped.length };
   }
 
-  return { processPackAlerts, runPackAlerts, sendPackExpiryAlertForRow, sendPackAlertForOrganization, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail };
+  return { processPackAlerts, runPackAlerts, sendPackExpiryAlertForRow, sendPackAlertForOrganization, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail, sendPackRepublishedAfterRechargeEmail };
 }

@@ -950,6 +950,20 @@ function applyPackUpgradeMetadata(data = {}, request = {}, status = "pending") {
   };
 }
 
+function markPackExpiredAutoRepublishedMetadata(data = {}) {
+  const safeData = data && typeof data === "object" ? { ...data } : {};
+  delete safeData.packExpiredAutoUnpublished;
+  delete safeData.pack_expired_auto_unpublished;
+  delete safeData.packExpiredAutoUnpublishedAt;
+  delete safeData.pack_expired_auto_unpublished_at;
+  safeData.packExpiredAutoRepublished = true;
+  safeData.pack_expired_auto_republished = true;
+  safeData.packExpiredAutoRepublishedAt = new Date().toISOString();
+  safeData.pack_expired_auto_republished_at = safeData.packExpiredAutoRepublishedAt;
+  return safeData;
+}
+
+
 async function getOrganizationForPackUpgrade(organizationId) {
   if (!organizationId) return {};
   const result = await pool.query(
@@ -1561,7 +1575,7 @@ const packAlerts = createPackAlerts({
   sendTransactionalEmail,
   adminEmail: process.env.ALERT_ADMIN_EMAIL || "contact@intotheshift.io"
 });
-const { processPackAlerts, runPackAlerts, sendPackAlertForOrganization, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail } = packAlerts;
+const { processPackAlerts, runPackAlerts, sendPackAlertForOrganization, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail, sendPackRepublishedAfterRechargeEmail } = packAlerts;
 
 async function runOperationalAlerts() {
   const campaign = await runCampaignAlerts();
@@ -3377,6 +3391,49 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
       return res.status(404).json({ error: "Organisation introuvable" });
     }
 
+    let republishedProjects = [];
+    const updatedOrganization = result.rows[0];
+    const updatedPackIsActive = String(updatedOrganization.passations_pack || '').toLowerCase() === 'illimite' || (Number(updatedOrganization.passations_quota || 0) > 0 && packIsActive(updatedOrganization.pack_expires_at));
+    if (updatedPackIsActive) {
+      const republishedResult = await pool.query(
+        `UPDATE projects
+         SET status = 'published',
+             published_at = COALESCE(published_at, NOW()),
+             unpublished_at = NULL,
+             data = (COALESCE(data, '{}'::jsonb)
+                      - 'packExpiredAutoUnpublished'
+                      - 'pack_expired_auto_unpublished'
+                      - 'packExpiredAutoUnpublishedAt'
+                      - 'pack_expired_auto_unpublished_at')
+                    || jsonb_build_object(
+                      'packExpiredAutoRepublished', true,
+                      'pack_expired_auto_republished', true,
+                      'packExpiredAutoRepublishedAt', NOW(),
+                      'pack_expired_auto_republished_at', NOW()
+                    ),
+             updated_at = NOW()
+         WHERE organization_id = $1
+           AND status = 'unpublished'
+           AND (
+             COALESCE((data->>'packExpiredAutoUnpublished')::boolean, false) = true
+             OR COALESCE((data->>'pack_expired_auto_unpublished')::boolean, false) = true
+           )
+         RETURNING id, title, share_url, results_url, campaign_start_date, campaign_end_date, data`,
+        [id]
+      );
+      republishedProjects = republishedResult.rows || [];
+    }
+
+    let packRepublishedEmail = { sent: false, reason: "NO_REPUBLISHED_PROJECTS" };
+    if (republishedProjects.length && typeof sendPackRepublishedAfterRechargeEmail === "function") {
+      try {
+        packRepublishedEmail = await sendPackRepublishedAfterRechargeEmail({ organizationId: id, projects: republishedProjects });
+      } catch (emailErr) {
+        console.error("Erreur notification campagnes republiées après recharge pack", emailErr);
+        packRepublishedEmail = { sent: false, reason: "SEND_FAILED" };
+      }
+    }
+
     let packAlert = { sent: false, reason: "NOT_TRIGGERED" };
     if (typeof sendPackAlertForOrganization === "function") {
       try {
@@ -3387,7 +3444,12 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
       }
     }
 
-    res.json({ organization: formatOrganization(result.rows[0]), packAlert });
+    res.json({
+      organization: formatOrganization(result.rows[0]),
+      packAlert,
+      packRepublishedEmail,
+      republishedProjectsCount: republishedProjects.length
+    });
   } catch (err) {
     console.error("Erreur mise à jour passations organisation", err);
     res.status(500).json({ error: "Erreur mise à jour passations client final" });
@@ -3906,6 +3968,7 @@ app.patch("/api/admin/organizations/:id/pack-upgrade", auth, requireAdmin, async
   }
 
   const client = await pool.connect();
+  let republishedProjects = [];
 
   try {
     await client.query("BEGIN");
@@ -3998,11 +4061,40 @@ app.patch("/api/admin/organizations/:id/pack-upgrade", auth, requireAdmin, async
       );
     }
 
+
+    const republishedResult = await client.query(
+      `UPDATE projects
+       SET status = 'published',
+           published_at = COALESCE(published_at, NOW()),
+           unpublished_at = NULL,
+           data = (COALESCE(data, '{}'::jsonb)
+                    - 'packExpiredAutoUnpublished'
+                    - 'pack_expired_auto_unpublished'
+                    - 'packExpiredAutoUnpublishedAt'
+                    - 'pack_expired_auto_unpublished_at')
+                  || jsonb_build_object(
+                    'packExpiredAutoRepublished', true,
+                    'pack_expired_auto_republished', true,
+                    'packExpiredAutoRepublishedAt', NOW(),
+                    'pack_expired_auto_republished_at', NOW()
+                  ),
+           updated_at = NOW()
+       WHERE organization_id = $1
+         AND status = 'unpublished'
+         AND (
+           COALESCE((data->>'packExpiredAutoUnpublished')::boolean, false) = true
+           OR COALESCE((data->>'pack_expired_auto_unpublished')::boolean, false) = true
+         )
+       RETURNING id, title, share_url, results_url, campaign_start_date, campaign_end_date, data`,
+      [id]
+    );
+    republishedProjects = republishedResult.rows || [];
+
     if (org.pack_upgrade_source_project_id) {
       const projectResult = await client.query(`SELECT * FROM projects WHERE id = $1 FOR UPDATE`, [org.pack_upgrade_source_project_id]);
       const project = projectResult.rows[0];
       if (project) {
-        const approvedData = applyPackUpgradeMetadata(project.data || {}, request, "approved");
+        const approvedData = markPackExpiredAutoRepublishedMetadata(applyPackUpgradeMetadata(project.data || {}, request, "approved"));
         await client.query(`UPDATE projects SET data = $1::jsonb, updated_at = NOW() WHERE id = $2`, [JSON.stringify(approvedData), project.id]);
       }
     }
@@ -4019,11 +4111,23 @@ app.patch("/api/admin/organizations/:id/pack-upgrade", auth, requireAdmin, async
       }
     }
 
+    let packRepublishedEmail = { sent: false, reason: "NO_REPUBLISHED_PROJECTS" };
+    if (republishedProjects.length && typeof sendPackRepublishedAfterRechargeEmail === "function") {
+      try {
+        packRepublishedEmail = await sendPackRepublishedAfterRechargeEmail({ organizationId: id, projects: republishedProjects });
+      } catch (emailErr) {
+        console.error("Erreur notification campagnes republiées après recharge pack", emailErr);
+        packRepublishedEmail = { sent: false, reason: "SEND_FAILED" };
+      }
+    }
+
     return res.json({
       ok: true,
       status: "approved",
       organization: formatOrganization(updatedOrg.rows[0]),
-      packUpgradeApprovedEmail
+      packUpgradeApprovedEmail,
+      packRepublishedEmail,
+      republishedProjectsCount: republishedProjects.length
     });
   } catch (err) {
     await client.query("ROLLBACK");
@@ -4043,6 +4147,8 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
   }
 
   const client = await pool.connect();
+  let republishedProjects = [];
+  let republishedOrganizationId = null;
 
   try {
     await client.query("BEGIN");
@@ -4111,7 +4217,7 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
       return res.status(404).json({ error: "Cockpit client introuvable." });
     }
 
-    const approvedData = applyPackUpgradeMetadata(project.data || {}, request, "approved");
+    const approvedData = markPackExpiredAutoRepublishedMetadata(applyPackUpgradeMetadata(project.data || {}, request, "approved"));
 
     let updatedOrg;
     if (request.unlimited) {
@@ -4156,6 +4262,36 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
       );
     }
 
+
+    republishedOrganizationId = project.organization_id;
+    const republishedResult = await client.query(
+      `UPDATE projects
+       SET status = 'published',
+           published_at = COALESCE(published_at, NOW()),
+           unpublished_at = NULL,
+           data = (COALESCE(data, '{}'::jsonb)
+                    - 'packExpiredAutoUnpublished'
+                    - 'pack_expired_auto_unpublished'
+                    - 'packExpiredAutoUnpublishedAt'
+                    - 'pack_expired_auto_unpublished_at')
+                  || jsonb_build_object(
+                    'packExpiredAutoRepublished', true,
+                    'pack_expired_auto_republished', true,
+                    'packExpiredAutoRepublishedAt', NOW(),
+                    'pack_expired_auto_republished_at', NOW()
+                  ),
+           updated_at = NOW()
+       WHERE organization_id = $1
+         AND status = 'unpublished'
+         AND (
+           COALESCE((data->>'packExpiredAutoUnpublished')::boolean, false) = true
+           OR COALESCE((data->>'pack_expired_auto_unpublished')::boolean, false) = true
+         )
+       RETURNING id, title, share_url, results_url, campaign_start_date, campaign_end_date, data`,
+      [project.organization_id]
+    );
+    republishedProjects = republishedResult.rows || [];
+
     const updatedProject = await client.query(
       `UPDATE projects
        SET data = $1::jsonb,
@@ -4177,12 +4313,24 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
       }
     }
 
+    let packRepublishedEmail = { sent: false, reason: "NO_REPUBLISHED_PROJECTS" };
+    if (republishedProjects.length && republishedOrganizationId && typeof sendPackRepublishedAfterRechargeEmail === "function") {
+      try {
+        packRepublishedEmail = await sendPackRepublishedAfterRechargeEmail({ organizationId: republishedOrganizationId, projects: republishedProjects });
+      } catch (emailErr) {
+        console.error("Erreur notification campagnes republiées après recharge pack", emailErr);
+        packRepublishedEmail = { sent: false, reason: "SEND_FAILED" };
+      }
+    }
+
     return res.json({
       ok: true,
       status: "approved",
       project: updatedProject.rows[0],
       organization: formatOrganization(updatedOrg.rows[0]),
-      packUpgradeApprovedEmail
+      packUpgradeApprovedEmail,
+      packRepublishedEmail,
+      republishedProjectsCount: republishedProjects.length
     });
   } catch (err) {
     await client.query("ROLLBACK");
