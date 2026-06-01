@@ -249,8 +249,8 @@ function buildPackExpiryEmail({ row, recipient, type, unpublishedCount = 0 }) {
     ? `Le pack annuel de "${clientName}" est arrivé à expiration. Toutes les campagnes publiées associées à ce pack ont été automatiquement dépubliées.`
     : `Le pack annuel de "${clientName}" arrive à expiration le ${expiryDate}.`;
   const action = isExpired
-    ? "Pour relancer vos campagnes, rachetez un pack depuis votre page Mon compte. Le nouveau pack ouvrira une nouvelle période de 12 mois."
-    : "Pour éviter la dépublication automatique des campagnes à l’expiration, rechargez votre pack depuis votre page Mon compte.";
+    ? "Pour relancer vos campagnes, rachetez des crédits depuis votre page Mon compte. Le nouveau pack ouvrira une nouvelle période de 12 mois."
+    : "Pour éviter la dépublication automatique des campagnes à l’expiration, rechargez votre pack en crédits depuis votre page Mon compte.";
   return {
     subject,
     text:
@@ -263,7 +263,7 @@ Campagnes dépubliées : ${unpublishedCount}
 
 ${action}
 
-Recharger mon pack :
+Recharger mon pack en crédits :
 ${accountUrl}
 
 L’équipe Into The Shift`,
@@ -277,7 +277,7 @@ L’équipe Into The Shift`,
       <strong>Campagnes dépubliées :</strong> ${escapeHtml(String(unpublishedCount))}</p>
     </div>
     <p>${escapeHtml(action)}</p>
-    <p style="margin:22px 0 10px"><a href="${escapeHtml(accountUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Recharger mon pack</a></p>
+    <p style="margin:22px 0 10px"><a href="${escapeHtml(accountUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Recharger mon pack en crédits</a></p>
     <p>L’équipe Into The Shift</p>
   </div>
 </div>`
@@ -393,7 +393,7 @@ function buildPackUpgradeInternalEmail({ row, request, recipient }) {
   const projectUrl = `${row.frontend_url || "https://shiftstudio.intotheshift.io"}/admin.html#organizations`;
 
   return {
-    subject: `Demande de devis pack — ${recipient.clientName}`,
+    subject: `Demande de devis pack crédits — ${recipient.clientName}`,
     text:
 `Bonjour,
 
@@ -970,7 +970,7 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     const mailRow = {
       id: null,
       title: 'Demande de recharge depuis Mon compte',
-      display_title: 'Recharge de pack',
+      display_title: 'Recharge de crédits',
       data: {},
       organization_name: row.organization_name,
       contact_name: row.contact_name,
@@ -1179,8 +1179,8 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
 
     const mailRow = {
       id: null,
-      title: 'Recharge de pack validée',
-      display_title: 'Recharge de pack',
+      title: 'Recharge de crédits validée',
+      display_title: 'Recharge de crédits',
       data: {},
       organization_name: row.organization_name,
       contact_name: row.contact_name,
