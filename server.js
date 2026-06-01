@@ -1635,20 +1635,42 @@ function normalizeNotificationUrl(value = "") {
 async function createNotification({ audience = "client", userId = null, organizationId = null, projectId = null, type = "info", title = "Notification", message = "", actionUrl = "", metadata = {} } = {}) {
   try {
     const safeAudience = normalizeNotificationAudience(audience);
+    let finalUserId = userId || null;
+    let finalOrganizationId = organizationId || null;
+    const finalProjectId = projectId || null;
+
+    // Sécurise les notifications liées à un AD : même si l'appelant ne transmet
+    // que le projectId, on rattache toujours la notif au cockpit client concerné.
+    // C'est indispensable pour que l'admin arrive sur client-folder?id=... et non
+    // sur l'espace Mes AD du client.
+    if (finalProjectId && (!finalUserId || !finalOrganizationId)) {
+      const targetResult = await pool.query(
+        `SELECT user_id, organization_id FROM projects WHERE id = $1 LIMIT 1`,
+        [finalProjectId]
+      );
+      const target = targetResult.rows[0] || {};
+      finalUserId = finalUserId || target.user_id || null;
+      finalOrganizationId = finalOrganizationId || target.organization_id || null;
+    }
+
+    const safeMetadata = metadata && typeof metadata === "object" ? { ...metadata } : {};
+    if (finalProjectId && !safeMetadata.projectId) safeMetadata.projectId = finalProjectId;
+    if (finalOrganizationId && !safeMetadata.organizationId) safeMetadata.organizationId = finalOrganizationId;
+
     const result = await pool.query(
       `INSERT INTO notifications (audience, user_id, organization_id, project_id, type, title, message, action_url, metadata)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
        RETURNING *`,
       [
         safeAudience,
-        userId || null,
-        organizationId || null,
-        projectId || null,
+        finalUserId,
+        finalOrganizationId,
+        finalProjectId,
         String(type || "info"),
         String(title || "Notification"),
         String(message || ""),
         normalizeNotificationUrl(actionUrl),
-        JSON.stringify(metadata && typeof metadata === "object" ? metadata : {})
+        JSON.stringify(safeMetadata)
       ]
     );
     return result.rows[0] || null;
@@ -2170,17 +2192,21 @@ app.get("/api/notifications", auth, async (req, res) => {
 
     if (orgIds.length) {
       params.push(orgIds);
-      orgClause = `OR (audience IN ('client','partner') AND organization_id = ANY($3::int[]))`;
+      orgClause = `OR (n.audience IN ('client','partner') AND COALESCE(n.organization_id, p.organization_id) = ANY($3::int[]))`;
     }
 
-    const adminClause = role === "admin" ? "OR audience = 'admin'" : "";
+    const adminClause = role === "admin" ? "OR n.audience = 'admin'" : "";
     const result = await pool.query(
-      `SELECT *
-       FROM notifications
-       WHERE user_id = $1
+      `SELECT
+         n.*,
+         COALESCE(n.user_id, p.user_id) AS user_id,
+         COALESCE(n.organization_id, p.organization_id) AS organization_id
+       FROM notifications n
+       LEFT JOIN projects p ON p.id = n.project_id
+       WHERE COALESCE(n.user_id, p.user_id) = $1
           ${orgClause}
           ${adminClause}
-       ORDER BY created_at DESC
+       ORDER BY n.created_at DESC
        LIMIT $2`,
       params
     );
@@ -2201,16 +2227,27 @@ app.patch("/api/notifications/:id/read", auth, async (req, res) => {
     let orgClause = "";
     if (orgIds.length) {
       params.push(orgIds);
-      orgClause = `OR (audience IN ('client','partner') AND organization_id = ANY($3::int[]))`;
+      orgClause = `OR (n.audience IN ('client','partner') AND COALESCE(n.organization_id, p.organization_id) = ANY($3::int[]))`;
     }
-    const adminClause = role === "admin" ? "OR audience = 'admin'" : "";
+    const adminClause = role === "admin" ? "OR n.audience = 'admin'" : "";
 
     const result = await pool.query(
-      `UPDATE notifications
-       SET read_at = COALESCE(read_at, NOW())
-       WHERE id = $1
-         AND (user_id = $2 ${orgClause} ${adminClause})
-       RETURNING *`,
+      `WITH allowed AS (
+         SELECT n.id,
+                COALESCE(n.user_id, p.user_id) AS resolved_user_id,
+                COALESCE(n.organization_id, p.organization_id) AS resolved_organization_id
+         FROM notifications n
+         LEFT JOIN projects p ON p.id = n.project_id
+         WHERE n.id = $1
+           AND (COALESCE(n.user_id, p.user_id) = $2 ${orgClause} ${adminClause})
+       )
+       UPDATE notifications n
+       SET read_at = COALESCE(n.read_at, NOW())
+       FROM allowed a
+       WHERE n.id = a.id
+       RETURNING n.*,
+         a.resolved_user_id AS user_id,
+         a.resolved_organization_id AS organization_id`,
       params
     );
 
@@ -2230,16 +2267,23 @@ app.patch("/api/notifications/read-all", auth, async (req, res) => {
     let orgClause = "";
     if (orgIds.length) {
       params.push(orgIds);
-      orgClause = `OR (audience IN ('client','partner') AND organization_id = ANY($2::int[]))`;
+      orgClause = `OR (n.audience IN ('client','partner') AND COALESCE(n.organization_id, p.organization_id) = ANY($2::int[]))`;
     }
-    const adminClause = role === "admin" ? "OR audience = 'admin'" : "";
+    const adminClause = role === "admin" ? "OR n.audience = 'admin'" : "";
 
     const result = await pool.query(
-      `UPDATE notifications
-       SET read_at = COALESCE(read_at, NOW())
-       WHERE read_at IS NULL
-         AND (user_id = $1 ${orgClause} ${adminClause})
-       RETURNING id`,
+      `WITH allowed AS (
+         SELECT n.id
+         FROM notifications n
+         LEFT JOIN projects p ON p.id = n.project_id
+         WHERE n.read_at IS NULL
+           AND (COALESCE(n.user_id, p.user_id) = $1 ${orgClause} ${adminClause})
+       )
+       UPDATE notifications n
+       SET read_at = COALESCE(n.read_at, NOW())
+       FROM allowed a
+       WHERE n.id = a.id
+       RETURNING n.id`,
       params
     );
 
