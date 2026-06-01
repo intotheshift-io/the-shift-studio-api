@@ -717,7 +717,19 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     }
 
     const column = getPackExpiryColumn(type);
-    await pool.query(`UPDATE organizations SET ${column} = NOW() WHERE id = $1`, [row.id]);
+    if (type === "expired") {
+      await pool.query(
+        `UPDATE organizations
+         SET ${column} = NOW(),
+             passations_quota = 0,
+             passations_used = 0,
+             passations_pack = COALESCE(NULLIF(passations_pack, ''), 'expired')
+         WHERE id = $1`,
+        [row.id]
+      );
+    } else {
+      await pool.query(`UPDATE organizations SET ${column} = NOW() WHERE id = $1`, [row.id]);
+    }
     return {
       sent: true,
       id: row.id,
@@ -739,6 +751,11 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
 
     if (!row) {
       return { sent: false, skipped: true, id: organizationId, reason: "ORGANIZATION_NOT_ELIGIBLE" };
+    }
+
+    const expiryResult = await sendPackExpiryAlertForRow(row, { mode });
+    if (expiryResult.sent || (expiryResult.skipped && expiryResult.type === "expired")) {
+      return expiryResult;
     }
 
     return sendPackAlertForRow(row, { mode });
