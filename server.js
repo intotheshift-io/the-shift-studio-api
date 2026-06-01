@@ -162,84 +162,9 @@ const transporter = mailerIsConfigured()
     })
   : null;
 
-async function logNotificationEvent({
-  eventType = "info",
-  source = "server",
-  notificationId = null,
-  audience = null,
-  userId = null,
-  organizationId = null,
-  projectId = null,
-  notificationType = null,
-  title = "",
-  message = "",
-  actionUrl = "",
-  emailTo = "",
-  emailCc = "",
-  emailBcc = "",
-  emailSubject = "",
-  emailSent = null,
-  emailError = "",
-  status = "info",
-  metadata = {}
-} = {}) {
-  try {
-    await pool.query(
-      `INSERT INTO notification_logs (
-        event_type, source, notification_id, audience, user_id, organization_id, project_id,
-        notification_type, title, message, action_url, email_to, email_cc, email_bcc,
-        email_subject, email_sent, email_error, status, metadata
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb)`,
-      [
-        String(eventType || "info"),
-        String(source || "server"),
-        notificationId || null,
-        audience || null,
-        userId || null,
-        organizationId || null,
-        projectId || null,
-        notificationType || null,
-        String(title || ""),
-        String(message || ""),
-        String(actionUrl || ""),
-        String(emailTo || ""),
-        String(emailCc || ""),
-        String(emailBcc || ""),
-        String(emailSubject || ""),
-        emailSent === null || emailSent === undefined ? null : Boolean(emailSent),
-        String(emailError || ""),
-        String(status || "info"),
-        JSON.stringify(metadata && typeof metadata === "object" ? metadata : {})
-      ]
-    );
-  } catch (err) {
-    // La supervision ne doit jamais bloquer l'application ni l'envoi d'emails.
-    console.warn("Journal notification non écrit", err.message || err);
-  }
-}
-
-async function sendTransactionalEmail({ to, cc, bcc, subject, text, html, attachments, log = {} }) {
-  const logBase = {
-    eventType: "email",
-    source: log.source || "sendTransactionalEmail",
-    audience: log.audience || null,
-    userId: log.userId || null,
-    organizationId: log.organizationId || null,
-    projectId: log.projectId || null,
-    notificationType: log.type || null,
-    title: log.title || "",
-    message: log.message || "",
-    actionUrl: log.actionUrl || "",
-    emailTo: to || "",
-    emailCc: cc || "",
-    emailBcc: bcc || "",
-    emailSubject: subject || "",
-    metadata: { ...(log.metadata && typeof log.metadata === "object" ? log.metadata : {}), hasAttachments: Array.isArray(attachments) && attachments.length > 0 }
-  };
-
+async function sendTransactionalEmail({ to, cc, bcc, subject, text, html, attachments }) {
   if (!transporter) {
     console.warn("Email non envoyé : SMTP non configuré", { to, subject });
-    await logNotificationEvent({ ...logBase, emailSent: false, emailError: "SMTP_NOT_CONFIGURED", status: "skipped" });
     return { sent: false, reason: "SMTP_NOT_CONFIGURED" };
   }
 
@@ -255,11 +180,9 @@ async function sendTransactionalEmail({ to, cc, bcc, subject, text, html, attach
       attachments: Array.isArray(attachments) ? attachments : undefined
     });
 
-    await logNotificationEvent({ ...logBase, emailSent: true, status: "sent" });
     return { sent: true };
   } catch (err) {
     console.error("Erreur envoi email", err);
-    await logNotificationEvent({ ...logBase, emailSent: false, emailError: err.message || "SEND_FAILED", status: "error" });
     return { sent: false, reason: "SEND_FAILED" };
   }
 }
@@ -639,47 +562,6 @@ async function initDb() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_notifications_org_unread
     ON notifications(organization_id, read_at, created_at DESC);
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS notification_logs (
-      id SERIAL PRIMARY KEY,
-      event_type TEXT NOT NULL DEFAULT 'info',
-      source TEXT,
-      notification_id INTEGER REFERENCES notifications(id) ON DELETE SET NULL,
-      audience TEXT,
-      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-      organization_id INTEGER REFERENCES organizations(id) ON DELETE SET NULL,
-      project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
-      notification_type TEXT,
-      title TEXT,
-      message TEXT,
-      action_url TEXT,
-      email_to TEXT,
-      email_cc TEXT,
-      email_bcc TEXT,
-      email_subject TEXT,
-      email_sent BOOLEAN,
-      email_error TEXT,
-      status TEXT NOT NULL DEFAULT 'info',
-      metadata JSONB DEFAULT '{}'::jsonb,
-      created_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_notification_logs_created
-    ON notification_logs(created_at DESC);
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_notification_logs_project
-    ON notification_logs(project_id, created_at DESC);
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_notification_logs_organization
-    ON notification_logs(organization_id, created_at DESC);
   `);
 
 
@@ -1756,7 +1638,7 @@ async function createNotification({ audience = "client", userId = null, organiza
     const inputMetadata = metadata && typeof metadata === "object" ? metadata : {};
     let finalUserId = userId || inputMetadata.userId || inputMetadata.user_id || null;
     let finalOrganizationId = organizationId || inputMetadata.organizationId || inputMetadata.organization_id || null;
-    let finalProjectId = projectId || inputMetadata.projectId || inputMetadata.project_id || null;
+    const finalProjectId = projectId || inputMetadata.projectId || inputMetadata.project_id || null;
 
     // Sécurise les notifications liées à un AD : même si l'appelant ne transmet
     // que le projectId, on rattache toujours la notif au cockpit client concerné.
@@ -1775,21 +1657,11 @@ async function createNotification({ audience = "client", userId = null, organiza
     const safeMetadata = metadata && typeof metadata === "object" ? { ...metadata } : {};
     if (finalProjectId && !safeMetadata.projectId) safeMetadata.projectId = finalProjectId;
     if (finalOrganizationId && !safeMetadata.organizationId) safeMetadata.organizationId = finalOrganizationId;
+    if (finalUserId && !safeMetadata.userId) safeMetadata.userId = finalUserId;
 
-    const finalActionUrl = normalizeNotificationUrl(actionUrl);
-    const finalType = String(type || "info");
-    const finalTitle = String(title || "Notification");
-    const finalMessage = String(message || "");
-    console.log("[ITS NOTIF DEBUG][CREATE]", {
-      audience: safeAudience,
-      userId: finalUserId,
-      organizationId: finalOrganizationId,
-      projectId: finalProjectId,
-      type: finalType,
-      title: finalTitle,
-      actionUrl: finalActionUrl,
-      metadata: safeMetadata
-    });
+    const finalActionUrl = safeAudience === "admin" && finalOrganizationId && !actionUrl
+      ? `/client-folder.html?id=${encodeURIComponent(finalOrganizationId)}`
+      : normalizeNotificationUrl(actionUrl);
 
     const result = await pool.query(
       `INSERT INTO notifications (audience, user_id, organization_id, project_id, type, title, message, action_url, metadata)
@@ -1800,48 +1672,16 @@ async function createNotification({ audience = "client", userId = null, organiza
         finalUserId,
         finalOrganizationId,
         finalProjectId,
-        finalType,
-        finalTitle,
-        finalMessage,
+        String(type || "info"),
+        String(title || "Notification"),
+        String(message || ""),
         finalActionUrl,
         JSON.stringify(safeMetadata)
       ]
     );
-    const created = result.rows[0] || null;
-    if (created) {
-      await logNotificationEvent({
-        eventType: "notification",
-        source: safeMetadata.source || "createNotification",
-        notificationId: created.id,
-        audience: safeAudience,
-        userId: finalUserId,
-        organizationId: finalOrganizationId,
-        projectId: finalProjectId,
-        notificationType: finalType,
-        title: finalTitle,
-        message: finalMessage,
-        actionUrl: finalActionUrl,
-        status: "created",
-        metadata: safeMetadata
-      });
-    }
-    return created;
+    return result.rows[0] || null;
   } catch (err) {
     console.error("Erreur création notification", err);
-    await logNotificationEvent({
-      eventType: "notification",
-      source: "createNotification",
-      audience,
-      userId,
-      organizationId,
-      projectId,
-      notificationType: type,
-      title,
-      message,
-      actionUrl,
-      status: "error",
-      metadata: { error: err.message || "CREATE_NOTIFICATION_FAILED" }
-    });
     return null;
   }
 }
@@ -2137,8 +1977,6 @@ app.get("/debug-version", (req, res) => {
     hasCampaignExtensionEmails: true,
     hasCampaignReprogrammingEmails: true,
     hasOrganizationUsersRoute: true,
-    hasNotificationLogs: true,
-    hasAdminNotificationsPageApi: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -2364,7 +2202,6 @@ app.get("/api/notifications", auth, async (req, res) => {
     }
 
     const adminClause = role === "admin" ? "OR n.audience = 'admin'" : "";
-    console.log("[ITS NOTIF DEBUG][GET]", { userId: req.user.id, role, orgIds, limit });
     const result = await pool.query(
       `SELECT
          n.*,
@@ -2460,108 +2297,6 @@ app.patch("/api/notifications/read-all", auth, async (req, res) => {
   } catch (err) {
     console.error("PATCH /api/notifications/read-all", err);
     res.status(500).json({ error: "Erreur mise à jour notifications." });
-  }
-});
-
-app.get("/api/admin/notification-logs", auth, requireAdmin, async (req, res) => {
-  try {
-    const limit = Math.min(300, Math.max(1, Number(req.query.limit || 100)));
-    const type = String(req.query.type || "").trim();
-    const status = String(req.query.status || "").trim();
-    const audience = String(req.query.audience || "").trim();
-    const projectId = Number(req.query.projectId || req.query.project_id || 0);
-    const organizationId = Number(req.query.organizationId || req.query.organization_id || 0);
-    const q = String(req.query.q || "").trim();
-
-    const where = [];
-    const params = [];
-    function add(value) { params.push(value); return `$${params.length}`; }
-
-    if (type) where.push(`nl.event_type = ${add(type)}`);
-    if (status) where.push(`nl.status = ${add(status)}`);
-    if (audience) where.push(`nl.audience = ${add(audience)}`);
-    if (Number.isInteger(projectId) && projectId > 0) where.push(`nl.project_id = ${add(projectId)}`);
-    if (Number.isInteger(organizationId) && organizationId > 0) where.push(`nl.organization_id = ${add(organizationId)}`);
-    if (q) {
-      const needle = `%${q}%`;
-      where.push(`(
-        nl.title ILIKE ${add(needle)} OR nl.message ILIKE ${add(needle)} OR nl.email_subject ILIKE ${add(needle)}
-        OR nl.email_to ILIKE ${add(needle)} OR nl.email_cc ILIKE ${add(needle)}
-        OR o.name ILIKE ${add(needle)} OR p.title ILIKE ${add(needle)}
-      )`);
-    }
-
-    params.push(limit);
-    const result = await pool.query(
-      `SELECT
-         nl.*,
-         o.name AS organization_name,
-         p.title AS project_title,
-         u.email AS user_email,
-         u.first_name AS user_first_name,
-         u.last_name AS user_last_name
-       FROM notification_logs nl
-       LEFT JOIN organizations o ON o.id = nl.organization_id
-       LEFT JOIN projects p ON p.id = nl.project_id
-       LEFT JOIN users u ON u.id = nl.user_id
-       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-       ORDER BY nl.created_at DESC
-       LIMIT $${params.length}`,
-      params
-    );
-
-    res.json({
-      logs: result.rows.map(row => ({
-        id: row.id,
-        eventType: row.event_type,
-        source: row.source || "",
-        notificationId: row.notification_id || null,
-        audience: row.audience || "",
-        userId: row.user_id || null,
-        userEmail: row.user_email || "",
-        userName: `${row.user_first_name || ""} ${row.user_last_name || ""}`.trim(),
-        organizationId: row.organization_id || null,
-        organizationName: row.organization_name || "",
-        projectId: row.project_id || null,
-        projectTitle: row.project_title || "",
-        notificationType: row.notification_type || "",
-        title: row.title || "",
-        message: row.message || "",
-        actionUrl: row.action_url || "",
-        emailTo: row.email_to || "",
-        emailCc: row.email_cc || "",
-        emailBcc: row.email_bcc || "",
-        emailSubject: row.email_subject || "",
-        emailSent: row.email_sent,
-        emailError: row.email_error || "",
-        status: row.status || "info",
-        metadata: row.metadata || {},
-        createdAt: row.created_at || null
-      }))
-    });
-  } catch (err) {
-    console.error("GET /api/admin/notification-logs", err);
-    res.status(500).json({ error: "Erreur chargement journal notifications." });
-  }
-});
-
-app.get("/api/admin/notification-logs/summary", auth, requireAdmin, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT
-        COUNT(*)::int AS total,
-        COUNT(*) FILTER (WHERE event_type = 'email')::int AS emails,
-        COUNT(*) FILTER (WHERE event_type = 'notification')::int AS notifications,
-        COUNT(*) FILTER (WHERE status = 'error')::int AS errors,
-        COUNT(*) FILTER (WHERE email_sent = true)::int AS emails_sent,
-        COUNT(*) FILTER (WHERE email_sent = false)::int AS emails_not_sent,
-        COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours')::int AS last_24h
-      FROM notification_logs
-    `);
-    res.json({ summary: result.rows[0] || {} });
-  } catch (err) {
-    console.error("GET /api/admin/notification-logs/summary", err);
-    res.status(500).json({ error: "Erreur résumé journal notifications." });
   }
 });
 
@@ -5058,21 +4793,6 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
       publicationEmail = await sendProjectPublicationEmail(id);
     }
 
-    if (finalStatus === "published" && currentStatus !== "published" && !publicationEmail.sent) {
-      await createClientNotificationForProject(id, {
-        type: "published",
-        title: "Autodiagnostic publié",
-        message: `Votre autodiagnostic « ${extractProjectDisplayTitle(result.rows[0].data || {}, result.rows[0].title || "votre autodiagnostic")} » est maintenant publié.`,
-        actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(id)}`,
-        metadata: {
-          email: "publication",
-          emailStatus: publicationEmail.reason || "NOT_SENT",
-          shareUrl: result.rows[0].share_url || "",
-          resultsUrl: result.rows[0].results_url || ""
-        }
-      });
-    }
-
     res.json({ ok: true, project: result.rows[0], publicationEmail });
   } catch (err) {
     console.error("Erreur publication projet", err);
@@ -5723,91 +5443,96 @@ function extractProjectIdFromTransmissionBody(body = {}) {
   );
 }
 
+function withNotificationTargetIds(body = {}, target = {}) {
+  const projectId = target.projectId || target.project_id || null;
+  const organizationId = target.organizationId || target.organization_id || null;
+  const userId = target.userId || target.user_id || null;
+  const next = body && typeof body === "object" ? { ...body } : {};
 
-async function enrichTransmissionPayloadForNotificationRouting(req) {
-  const originalBody = req.body && typeof req.body === "object" ? req.body : {};
-  const projectId = extractProjectIdFromTransmissionBody(originalBody);
-
-  if (!projectId) {
-    console.warn("[ITS NOTIF DEBUG][TRANSMISSION] Aucun projectId dans le payload de transmission", {
-      userId: req.user?.id || null,
-      bodyKeys: Object.keys(originalBody || {}),
-      payloadKeys: originalBody.payload && typeof originalBody.payload === "object" ? Object.keys(originalBody.payload) : []
-    });
-    return originalBody;
+  if (projectId) {
+    next.projectId = projectId;
+    next.project_id = projectId;
+    next.currentProjectId = next.currentProjectId || projectId;
+    next.current_project_id = next.current_project_id || projectId;
+    next.currentAdId = next.currentAdId || projectId;
+    next.current_ad_id = next.current_ad_id || projectId;
+  }
+  if (organizationId) {
+    next.organizationId = organizationId;
+    next.organization_id = organizationId;
+  }
+  if (userId) {
+    next.userId = userId;
+    next.user_id = userId;
   }
 
-  try {
-    const result = await pool.query(
-      `SELECT id, user_id, organization_id, title, share_url, results_url, campaign_start_date, campaign_end_date
-       FROM projects
-       WHERE id = $1
-       LIMIT 1`,
-      [projectId]
-    );
-    const project = result.rows[0] || null;
-
-    if (!project) {
-      console.warn("[ITS NOTIF DEBUG][TRANSMISSION] projectId introuvable", { projectId, userId: req.user?.id || null });
-      return originalBody;
+  if (next.payload && typeof next.payload === "object") {
+    next.payload = { ...next.payload };
+    if (projectId) {
+      next.payload.projectId = next.payload.projectId || projectId;
+      next.payload.project_id = next.payload.project_id || projectId;
+      next.payload.currentProjectId = next.payload.currentProjectId || projectId;
+      next.payload.current_project_id = next.payload.current_project_id || projectId;
+      next.payload.currentAdId = next.payload.currentAdId || projectId;
+      next.payload.current_ad_id = next.payload.current_ad_id || projectId;
     }
-
-    const payload = originalBody.payload && typeof originalBody.payload === "object"
-      ? { ...originalBody.payload }
-      : {};
-
-    const enriched = {
-      ...originalBody,
-      projectId: project.id,
-      project_id: project.id,
-      currentProjectId: project.id,
-      current_project_id: project.id,
-      currentAdId: project.id,
-      current_ad_id: project.id,
-      userId: originalBody.userId || originalBody.user_id || project.user_id || null,
-      user_id: originalBody.user_id || originalBody.userId || project.user_id || null,
-      organizationId: originalBody.organizationId || originalBody.organization_id || project.organization_id || null,
-      organization_id: originalBody.organization_id || originalBody.organizationId || project.organization_id || null,
-      shareUrl: originalBody.shareUrl || originalBody.share_url || project.share_url || "",
-      share_url: originalBody.share_url || originalBody.shareUrl || project.share_url || "",
-      resultsUrl: originalBody.resultsUrl || originalBody.results_url || project.results_url || "",
-      results_url: originalBody.results_url || originalBody.resultsUrl || project.results_url || "",
-      campaignStartDate: originalBody.campaignStartDate || originalBody.campaign_start_date || project.campaign_start_date || null,
-      campaign_start_date: originalBody.campaign_start_date || originalBody.campaignStartDate || project.campaign_start_date || null,
-      campaignEndDate: originalBody.campaignEndDate || originalBody.campaign_end_date || project.campaign_end_date || null,
-      campaign_end_date: originalBody.campaign_end_date || originalBody.campaignEndDate || project.campaign_end_date || null,
-      payload: {
-        ...payload,
-        projectId: payload.projectId || payload.project_id || project.id,
-        project_id: payload.project_id || payload.projectId || project.id,
-        currentProjectId: payload.currentProjectId || payload.current_project_id || project.id,
-        current_project_id: payload.current_project_id || payload.currentProjectId || project.id,
-        currentAdId: payload.currentAdId || payload.current_ad_id || project.id,
-        current_ad_id: payload.current_ad_id || payload.currentAdId || project.id,
-        userId: payload.userId || payload.user_id || project.user_id || null,
-        user_id: payload.user_id || payload.userId || project.user_id || null,
-        organizationId: payload.organizationId || payload.organization_id || project.organization_id || null,
-        organization_id: payload.organization_id || payload.organizationId || project.organization_id || null,
-        shareUrl: payload.shareUrl || payload.share_url || project.share_url || "",
-        share_url: payload.share_url || payload.shareUrl || project.share_url || "",
-        resultsUrl: payload.resultsUrl || payload.results_url || project.results_url || "",
-        results_url: payload.results_url || payload.resultsUrl || project.results_url || ""
-      }
-    };
-
-    console.log("[ITS NOTIF DEBUG][TRANSMISSION] Payload enrichi pour notif", {
-      projectId: enriched.projectId,
-      organizationId: enriched.organizationId,
-      userId: enriched.userId,
-      hasShareUrl: Boolean(enriched.shareUrl),
-      hasResultsUrl: Boolean(enriched.resultsUrl)
-    });
-
-    return enriched;
-  } catch (err) {
-    console.error("[ITS NOTIF DEBUG][TRANSMISSION] Erreur enrichissement payload", err);
-    return originalBody;
+    if (organizationId) {
+      next.payload.organizationId = next.payload.organizationId || organizationId;
+      next.payload.organization_id = next.payload.organization_id || organizationId;
+    }
+    if (userId) {
+      next.payload.userId = next.payload.userId || userId;
+      next.payload.user_id = next.payload.user_id || userId;
+    }
   }
+
+  if (next.data && typeof next.data === "object") {
+    next.data = { ...next.data };
+    if (projectId) {
+      next.data.projectId = next.data.projectId || projectId;
+      next.data.project_id = next.data.project_id || projectId;
+      next.data.currentAdId = next.data.currentAdId || projectId;
+      next.data.current_ad_id = next.data.current_ad_id || projectId;
+    }
+    if (organizationId) {
+      next.data.organizationId = next.data.organizationId || organizationId;
+      next.data.organization_id = next.data.organization_id || organizationId;
+    }
+    if (userId) {
+      next.data.userId = next.data.userId || userId;
+      next.data.user_id = next.data.user_id || userId;
+    }
+  }
+
+  return next;
+}
+
+async function enrichTransmissionPayloadForNotifications(req) {
+  const body = req.body || {};
+  const projectId = extractProjectIdFromTransmissionBody(body);
+  if (!projectId) return body;
+
+  const result = await pool.query(
+    `SELECT id, user_id, organization_id
+     FROM projects
+     WHERE id = $1
+       AND (
+         user_id = $2
+         OR created_by = $2
+         OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $2)
+         OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
+       )
+     LIMIT 1`,
+    [projectId, req.user.id]
+  );
+
+  const row = result.rows[0];
+  if (!row) return body;
+  return withNotificationTargetIds(body, {
+    projectId: row.id,
+    organizationId: row.organization_id || null,
+    userId: row.user_id || null
+  });
 }
 
 async function markProjectAsSentFromTransmission(req, options = {}) {
@@ -5856,7 +5581,7 @@ async function markProjectAsSentFromTransmission(req, options = {}) {
 
 app.post("/api/transmissions/submit", auth, async (req, res) => {
   try {
-    const payloadForEmail = await enrichTransmissionPayloadForNotificationRouting(req);
+    const payloadForEmail = await enrichTransmissionPayloadForNotifications(req);
     const normalizedPayload = payloadForEmail.payload && typeof payloadForEmail.payload === "object" ? payloadForEmail.payload : payloadForEmail;
     const isExtensionTransmission =
       payloadForEmail.isExtending === true ||
@@ -5900,16 +5625,6 @@ app.post("/api/transmissions/submit", auth, async (req, res) => {
 
     const ctx = transmissionEmail.ctx || {};
 
-    console.log("TRANSMISSION SUBMIT EMAIL STATUS", {
-      clientEmail: ctx.clientEmail,
-      clientEmailSent: transmissionEmail.clientEmailSent,
-      clientEmailStatus: transmissionEmail.clientEmailStatus || "SENT",
-      adminEmail: "contact@intotheshift.io",
-      adminEmailSent: transmissionEmail.adminEmailSent,
-      adminEmailStatus: transmissionEmail.adminEmailStatus || "SENT",
-      excelFilename: ctx.excelFilename,
-      recapFilename: ctx.recapFilename
-    });
 
     const projectStatusUpdate = await markProjectAsSentFromTransmission(req, {
       isExtensionTransmission,

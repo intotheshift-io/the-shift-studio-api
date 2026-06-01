@@ -618,36 +618,29 @@ L’équipe Into The Shift`,
 
 export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DEFAULT_ADMIN_EMAIL, createNotification = null }) {
   async function notifyClientOrganization(organizationId, payload = {}) {
-    if (typeof createNotification !== "function" || !organizationId) {
-      console.warn("[ITS NOTIF DEBUG][PACK][CLIENT] notification ignorée", { hasCreateNotification: typeof createNotification === "function", organizationId, type: payload.type || "" });
-      return null;
-    }
-    const finalPayload = { audience: "client", organizationId, ...payload, metadata: { ...((payload.metadata && typeof payload.metadata === "object") ? payload.metadata : {}), organizationId } };
-    console.log("[ITS NOTIF DEBUG][PACK][CLIENT] tentative", { type: finalPayload.type, title: finalPayload.title, organizationId, actionUrl: finalPayload.actionUrl });
-    const created = await createNotification(finalPayload);
-    console.log("[ITS NOTIF DEBUG][PACK][CLIENT] résultat", { createdId: created?.id || null, type: finalPayload.type, organizationId });
-    return created;
+    if (typeof createNotification !== "function" || !organizationId) return null;
+    const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
+    return createNotification({
+      audience: "client",
+      organizationId,
+      ...payload,
+      metadata: { ...metadata, organizationId }
+    });
   }
 
   async function notifyAdmin(payload = {}) {
-    if (typeof createNotification !== "function") {
-      console.warn("[ITS NOTIF DEBUG][PACK][ADMIN] createNotification indisponible", { type: payload.type || "" });
-      return null;
-    }
+    if (typeof createNotification !== "function") return null;
     const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
     const organizationId = payload.organizationId || payload.organization_id || metadata.organizationId || metadata.organization_id || null;
     const projectId = payload.projectId || payload.project_id || metadata.projectId || metadata.project_id || null;
-    const finalPayload = {
+    return createNotification({
       audience: "admin",
       organizationId,
       projectId,
       ...payload,
+      actionUrl: payload.actionUrl || (organizationId ? `/client-folder.html?id=${encodeURIComponent(organizationId)}` : ""),
       metadata: { ...metadata, organizationId, projectId }
-    };
-    console.log("[ITS NOTIF DEBUG][PACK][ADMIN] tentative", { type: finalPayload.type, title: finalPayload.title, organizationId, projectId, actionUrl: finalPayload.actionUrl });
-    const created = await createNotification(finalPayload);
-    console.log("[ITS NOTIF DEBUG][PACK][ADMIN] résultat", { createdId: created?.id || null, type: finalPayload.type, organizationId, projectId });
-    return created;
+    });
   }
 
   async function getPackAlertRows() {
@@ -887,6 +880,33 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     } else {
       await pool.query(`UPDATE organizations SET ${column} = NOW() WHERE id = $1`, [row.id]);
     }
+
+    const expiryNotificationType = type === "expired" ? "pack_expired" : "pack_expiry";
+    const expiryTitle = type === "expired" ? "Pack expiré" : "Pack proche expiration";
+    const expiryMessage = type === "expired"
+      ? `Le pack de ${row.name || "votre organisation"} est expiré. ${unpublishedCount} campagne${unpublishedCount > 1 ? "s ont été dépubliées" : " a été dépubliée"}.`
+      : `Le pack de ${row.name || "votre organisation"} arrive bientôt à expiration.`;
+
+    if (clientMailResult.sent) {
+      await notifyClientOrganization(row.id, {
+        type: expiryNotificationType,
+        title: expiryTitle,
+        message: expiryMessage,
+        actionUrl: "/account.html?tab=quota",
+        metadata: { email: "pack_expiry", expiryType: type, unpublishedCount, packExpiresAt: row.pack_expires_at }
+      });
+    }
+
+    if (internalMailResult.sent) {
+      await notifyAdmin({
+        type: expiryNotificationType,
+        title: `${expiryTitle} — ${row.name || "Client"}`,
+        message: expiryMessage,
+        actionUrl: `/client-folder.html?id=${encodeURIComponent(row.id)}`,
+        metadata: { email: "pack_expiry_internal", organizationId: row.id, expiryType: type, unpublishedCount, packExpiresAt: row.pack_expires_at }
+      });
+    }
+
     return {
       sent: true,
       id: row.id,
@@ -1479,6 +1499,26 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
         subject: clientMail.subject,
         text: clientMail.text,
         html: clientMail.html
+      });
+    }
+
+    if (clientMailResult.sent) {
+      await notifyClientOrganization(row.id, {
+        type: "pack_republished",
+        title: "Campagnes republiées",
+        message: `${republishedProjects.length} campagne${republishedProjects.length > 1 ? "s ont été republiées" : " a été republiée"} après recharge du pack.`,
+        actionUrl: "/mes-autodiagnostics.html",
+        metadata: { email: "pack_republished_client", organizationId: row.id, republishedCount: republishedProjects.length }
+      });
+    }
+
+    if (internalMailResult.sent) {
+      await notifyAdmin({
+        type: "pack_republished",
+        title: `Campagnes republiées — ${row.name || "Client"}`,
+        message: `${republishedProjects.length} campagne${republishedProjects.length > 1 ? "s ont été republiées" : " a été republiée"} après recharge du pack.`,
+        actionUrl: `/client-folder.html?id=${encodeURIComponent(row.id)}`,
+        metadata: { email: "pack_republished_internal", organizationId: row.id, republishedCount: republishedProjects.length }
       });
     }
 

@@ -520,12 +520,9 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
   }
 
   async function notifyClientFromBody(body = {}, payload = {}) {
-    if (typeof createNotification !== "function") {
-      console.warn("[ITS NOTIF DEBUG][CAMPAIGN][CLIENT] createNotification indisponible", { type: payload.type || "" });
-      return null;
-    }
+    if (typeof createNotification !== "function") return null;
     const target = await resolveNotificationTarget(body);
-    const finalPayload = {
+    return createNotification({
       audience: "client",
       userId: target.userId || null,
       organizationId: target.organizationId || null,
@@ -534,31 +531,16 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
       metadata: {
         ...((payload.metadata && typeof payload.metadata === "object") ? payload.metadata : {}),
         projectId: target.projectId || null,
-        organizationId: target.organizationId || null,
-        userId: target.userId || null
+        organizationId: target.organizationId || null
       }
-    };
-    console.log("[ITS NOTIF DEBUG][CAMPAIGN][CLIENT] tentative", {
-      type: finalPayload.type,
-      title: finalPayload.title,
-      userId: finalPayload.userId,
-      organizationId: finalPayload.organizationId,
-      projectId: finalPayload.projectId,
-      actionUrl: finalPayload.actionUrl
     });
-    const created = await createNotification(finalPayload);
-    console.log("[ITS NOTIF DEBUG][CAMPAIGN][CLIENT] résultat", { createdId: created?.id || null, type: finalPayload.type });
-    return created;
   }
 
   async function notifyAdminFromBody(body = {}, payload = {}) {
-    if (typeof createNotification !== "function") {
-      console.warn("[ITS NOTIF DEBUG][CAMPAIGN][ADMIN] createNotification indisponible", { type: payload.type || "" });
-      return null;
-    }
+    if (typeof createNotification !== "function") return null;
     const target = await resolveNotificationTarget(body);
     const metadata = (payload.metadata && typeof payload.metadata === "object") ? payload.metadata : {};
-    const finalPayload = {
+    return createNotification({
       audience: "admin",
       organizationId: target.organizationId || null,
       projectId: target.projectId || null,
@@ -567,20 +549,9 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
       metadata: {
         ...metadata,
         projectId: target.projectId || null,
-        organizationId: target.organizationId || null,
-        userId: target.userId || null
+        organizationId: target.organizationId || null
       }
-    };
-    console.log("[ITS NOTIF DEBUG][CAMPAIGN][ADMIN] tentative", {
-      type: finalPayload.type,
-      title: finalPayload.title,
-      organizationId: finalPayload.organizationId,
-      projectId: finalPayload.projectId,
-      actionUrl: finalPayload.actionUrl
     });
-    const created = await createNotification(finalPayload);
-    console.log("[ITS NOTIF DEBUG][CAMPAIGN][ADMIN] résultat", { createdId: created?.id || null, type: finalPayload.type });
-    return created;
   }
 
   async function autoUnpublishExpiredProjects() {
@@ -761,8 +732,6 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
     const adminMailConfig = buildAdminExtensionEmail(ctx);
     const adminMail = await sendTransactionalEmail(adminMailConfig);
 
-    console.log("[ITS NOTIF DEBUG][CAMPAIGN][EXTENSION] emails", { clientSent: clientMail.sent, adminSent: adminMail.sent, clientReason: clientMail.reason || "", adminReason: adminMail.reason || "", clientEmail: ctx.clientEmail, projectId: getNotificationProjectId(body) });
-
     if (clientMail.sent) {
       await notifyClientFromBody(body, {
         type: "extended",
@@ -770,15 +739,6 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
         message: `La campagne « ${ctx.autodiagTitle || "votre autodiagnostic"} » a été prolongée.`,
         actionUrl: "/mes-autodiagnostics.html",
         metadata: { email: "campaign_extended", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "" }
-      });
-    }
-
-    if (adminMail.sent) {
-      await notifyAdminFromBody(body, {
-        type: "extended",
-        title: "Prolongation de campagne",
-        message: `La campagne « ${ctx.autodiagTitle || "autodiagnostic sans titre"} » a été prolongée par le client.`,
-        metadata: { email: "campaign_extended_admin", clientEmail: ctx.clientEmail || "", companyName: ctx.companyName || "", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "" }
       });
     }
 
@@ -833,8 +793,6 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
 
     const adminMail = await sendTransactionalEmail(buildAdminReprogrammingEmail(ctx));
 
-    console.log("[ITS NOTIF DEBUG][CAMPAIGN][REPROGRAMMING] emails", { clientSent: clientMail.sent, adminSent: adminMail.sent, clientReason: clientMail.reason || "", adminReason: adminMail.reason || "", clientEmail: ctx.clientEmail, projectId: getNotificationProjectId(body) });
-
     if (clientMail.sent) {
       await notifyClientFromBody(body, {
         type: "reprogrammed",
@@ -842,15 +800,6 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
         message: `La campagne « ${ctx.autodiagTitle || "votre autodiagnostic"} » a été reprogrammée.`,
         actionUrl: "/mes-autodiagnostics.html",
         metadata: { email: "campaign_reprogrammed", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "" }
-      });
-    }
-
-    if (adminMail.sent) {
-      await notifyAdminFromBody(body, {
-        type: "reprogrammed",
-        title: "Reprogrammation de campagne",
-        message: `La campagne « ${ctx.autodiagTitle || "autodiagnostic sans titre"} » a été reprogrammée par le client.`,
-        metadata: { email: "campaign_reprogrammed_admin", clientEmail: ctx.clientEmail || "", companyName: ctx.companyName || "", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "" }
       });
     }
 
@@ -903,8 +852,6 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
 
     const adminMailConfig = buildAdminTransmissionEmail(ctx);
     const adminMail = await sendTransactionalEmail(adminMailConfig);
-
-    console.log("[ITS NOTIF DEBUG][CAMPAIGN][TRANSMISSION] emails", { clientSent: clientMail.sent, adminSent: adminMail.sent, clientReason: clientMail.reason || "", adminReason: adminMail.reason || "", clientEmail: ctx.clientEmail, projectId: getNotificationProjectId(body) });
 
     if (clientMail.sent) {
       await notifyClientFromBody(body, {
