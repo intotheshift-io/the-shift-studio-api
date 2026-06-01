@@ -38,6 +38,70 @@ function getPackStatus(row) {
   return { type: "ok", label: "Pack OK", remaining, quota, used, remainingRate };
 }
 
+
+function normalizeDateOnly(value) {
+  if (!value) return "";
+  const s = String(value || "").trim();
+  if (!s) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString().slice(0, 10);
+}
+
+function daysUntilDate(value) {
+  const iso = normalizeDateOnly(value);
+  if (!iso) return null;
+  const [y, m, d] = iso.split("-").map(Number);
+  const target = new Date(y, m - 1, d);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (Number.isNaN(target.getTime())) return null;
+  return Math.round((target.getTime() - today.getTime()) / 86400000);
+}
+
+function formatDateLongFr(value) {
+  const iso = normalizeDateOnly(value);
+  if (!iso) return "—";
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" });
+}
+
+function getPackExpiryType(row) {
+  const days = daysUntilDate(row.pack_expires_at);
+  if (days === null) return null;
+  if (days <= 0) return "expired";
+  if (days === 60) return "j-60";
+  if (days === 30) return "j-30";
+  if (days === 7) return "j-7";
+  return null;
+}
+
+function shouldSendPackExpiryAlert(row, type) {
+  if (type === "expired") return !row.pack_expired_processed_at;
+  if (type === "j-60") return !row.pack_expiry_alert_60_sent_at;
+  if (type === "j-30") return !row.pack_expiry_alert_30_sent_at;
+  if (type === "j-7") return !row.pack_expiry_alert_7_sent_at;
+  return false;
+}
+
+function getPackExpiryColumn(type) {
+  if (type === "j-60") return "pack_expiry_alert_60_sent_at";
+  if (type === "j-30") return "pack_expiry_alert_30_sent_at";
+  if (type === "j-7") return "pack_expiry_alert_7_sent_at";
+  return "pack_expired_processed_at";
+}
+
+function getCommanditaireEmailsFromProjectData(dataList = []) {
+  const emails = [];
+  const list = Array.isArray(dataList) ? dataList : [];
+  for (const data of list) {
+    const c = extractPackProjectCommanditaire(data || {});
+    if (c.email) emails.push(c.email);
+  }
+  return uniqueEmails(emails);
+}
+
 function shouldSendPackAlert(row, status) {
   if (status.type === "empty") return !row.pack_alert_empty_sent_at;
   if (status.type === "critical") return !row.pack_alert_critical_sent_at;
@@ -53,6 +117,10 @@ function makeFrontendUrl(path = "") {
 
 function buildClientFolderUrl(organizationId) {
   return makeFrontendUrl(`/client-folder.html?id=${encodeURIComponent(organizationId)}`);
+}
+
+function buildAccountPackUrl() {
+  return makeFrontendUrl('/account.html?tab=quota');
 }
 
 function getPackAlertRecipients(row, adminEmail) {
@@ -162,6 +230,94 @@ L’équipe Into The Shift`,
     </div>
     <p style="margin:22px 0 10px"><a href="${escapeHtml(recipient.dashboardUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au dashboard client</a></p>
     <p><strong>Action recommandée :</strong><br>${escapeHtml(action)}</p>
+    <p>L’équipe Into The Shift</p>
+  </div>
+</div>`
+  };
+}
+
+
+function buildPackExpiryEmail({ row, recipient, type, unpublishedCount = 0 }) {
+  const clientName = recipient.clientName;
+  const expiryDate = formatDateLongFr(row.pack_expires_at);
+  const accountUrl = buildAccountPackUrl();
+  const isExpired = type === "expired";
+  const subject = isExpired
+    ? `Pack expiré — campagnes dépubliées — ${clientName}`
+    : `Votre pack expire bientôt — ${clientName}`;
+  const lead = isExpired
+    ? `Le pack annuel de "${clientName}" est arrivé à expiration. Toutes les campagnes publiées associées à ce pack ont été automatiquement dépubliées.`
+    : `Le pack annuel de "${clientName}" arrive à expiration le ${expiryDate}.`;
+  const action = isExpired
+    ? "Pour relancer vos campagnes, rachetez un pack depuis votre page Mon compte. Le nouveau pack ouvrira une nouvelle période de 12 mois."
+    : "Pour éviter la dépublication automatique des campagnes à l’expiration, rechargez votre pack depuis votre page Mon compte.";
+  return {
+    subject,
+    text:
+`Bonjour,
+
+${lead}
+
+Date de fin du pack : ${expiryDate}
+Campagnes dépubliées : ${unpublishedCount}
+
+${action}
+
+Recharger mon pack :
+${accountUrl}
+
+L’équipe Into The Shift`,
+    html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
+    <p>Bonjour,</p>
+    <p>${escapeHtml(lead)}</p>
+    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
+      <p style="margin:0"><strong>Date de fin du pack :</strong> ${escapeHtml(expiryDate)}<br>
+      <strong>Campagnes dépubliées :</strong> ${escapeHtml(String(unpublishedCount))}</p>
+    </div>
+    <p>${escapeHtml(action)}</p>
+    <p style="margin:22px 0 10px"><a href="${escapeHtml(accountUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Recharger mon pack</a></p>
+    <p>L’équipe Into The Shift</p>
+  </div>
+</div>`
+  };
+}
+
+function buildPackExpiryInternalEmail({ row, recipient, type, unpublishedCount = 0 }) {
+  const expiryDate = formatDateLongFr(row.pack_expires_at);
+  const clientName = recipient.clientName;
+  const isExpired = type === "expired";
+  return {
+    subject: `${isExpired ? "Pack expiré" : "Pack proche expiration"} — ${clientName}`,
+    text:
+`Bonjour,
+
+${isExpired ? "Le pack est expiré et les campagnes publiées ont été dépubliées." : "Le pack arrive bientôt à expiration."}
+
+Client : ${clientName}
+Date de fin du pack : ${expiryDate}
+Campagnes dépubliées : ${unpublishedCount}
+Contact client : ${row.contact_name || "—"} ${row.contact_email ? `<${row.contact_email}>` : ""}
+
+Accès recharge côté client :
+${buildAccountPackUrl()}
+
+Alerte interne Into The Shift.
+
+L’équipe Into The Shift`,
+    html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
+    <p>Bonjour,</p>
+    <p><strong>${escapeHtml(isExpired ? "Le pack est expiré et les campagnes publiées ont été dépubliées." : "Le pack arrive bientôt à expiration.")}</strong></p>
+    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
+      <p style="margin:0"><strong>Client :</strong> ${escapeHtml(clientName)}<br>
+      <strong>Date de fin du pack :</strong> ${escapeHtml(expiryDate)}<br>
+      <strong>Campagnes dépubliées :</strong> ${escapeHtml(String(unpublishedCount))}<br>
+      <strong>Contact client :</strong> ${escapeHtml(row.contact_name || "—")} ${row.contact_email ? `— ${escapeHtml(row.contact_email)}` : ""}</p>
+    </div>
+    <p><strong>Alerte interne Into The Shift.</strong></p>
     <p>L’équipe Into The Shift</p>
   </div>
 </div>`
@@ -380,18 +536,25 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
         o.pack_alert_low_sent_at,
         o.pack_alert_critical_sent_at,
         o.pack_alert_empty_sent_at,
+        o.pack_expires_at,
+        o.pack_expiry_alert_60_sent_at,
+        o.pack_expiry_alert_30_sent_at,
+        o.pack_expiry_alert_7_sent_at,
+        o.pack_expired_processed_at,
         creator.email AS creator_email,
         creator.first_name AS creator_first_name,
         creator.last_name AS creator_last_name,
         creator.company_name AS creator_company_name,
         creator.role AS creator_role,
         partner.email AS partner_email,
-        COALESCE(array_agg(DISTINCT ou_user.email) FILTER (WHERE ou_user.email IS NOT NULL), '{}') AS organization_user_emails
+        COALESCE(array_agg(DISTINCT ou_user.email) FILTER (WHERE ou_user.email IS NOT NULL), '{}') AS organization_user_emails,
+        COALESCE(jsonb_agg(p.data) FILTER (WHERE p.id IS NOT NULL AND p.status = 'published'), '[]'::jsonb) AS active_project_data
       FROM organizations o
       LEFT JOIN users creator ON creator.id = o.created_by
       LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
       LEFT JOIN organization_users ou ON ou.organization_id = o.id
       LEFT JOIN users ou_user ON ou_user.id = ou.user_id AND COALESCE(ou_user.status, 'active') = 'active'
+      LEFT JOIN projects p ON p.organization_id = o.id
       WHERE o.type = 'client'
         AND COALESCE(LOWER(o.passations_pack), '') <> 'illimite'
         AND COALESCE(o.passations_quota, 0) > 0
@@ -413,18 +576,25 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
         o.pack_alert_low_sent_at,
         o.pack_alert_critical_sent_at,
         o.pack_alert_empty_sent_at,
+        o.pack_expires_at,
+        o.pack_expiry_alert_60_sent_at,
+        o.pack_expiry_alert_30_sent_at,
+        o.pack_expiry_alert_7_sent_at,
+        o.pack_expired_processed_at,
         creator.email AS creator_email,
         creator.first_name AS creator_first_name,
         creator.last_name AS creator_last_name,
         creator.company_name AS creator_company_name,
         creator.role AS creator_role,
         partner.email AS partner_email,
-        COALESCE(array_agg(DISTINCT ou_user.email) FILTER (WHERE ou_user.email IS NOT NULL), '{}') AS organization_user_emails
+        COALESCE(array_agg(DISTINCT ou_user.email) FILTER (WHERE ou_user.email IS NOT NULL), '{}') AS organization_user_emails,
+        COALESCE(jsonb_agg(p.data) FILTER (WHERE p.id IS NOT NULL AND p.status = 'published'), '[]'::jsonb) AS active_project_data
       FROM organizations o
       LEFT JOIN users creator ON creator.id = o.created_by
       LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
       LEFT JOIN organization_users ou ON ou.organization_id = o.id
       LEFT JOIN users ou_user ON ou_user.id = ou.user_id AND COALESCE(ou_user.status, 'active') = 'active'
+      LEFT JOIN projects p ON p.organization_id = o.id
       WHERE o.id = $1
         AND o.type = 'client'
         AND COALESCE(LOWER(o.passations_pack), '') <> 'illimite'
@@ -501,6 +671,68 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     };
   }
 
+
+  async function sendPackExpiryAlertForRow(row, { mode = "all" } = {}) {
+    const type = getPackExpiryType(row);
+    const safeMode = String(mode || "all").toLowerCase();
+    if (!type) return { sent: false, skipped: true, id: row.id, reason: "NO_EXPIRY_MATCH" };
+    if (!["all", "expiry", "expiration", type].includes(safeMode)) return { sent: false, skipped: true, id: row.id, type, reason: "MODE_MISMATCH" };
+    if (!shouldSendPackExpiryAlert(row, type)) return { sent: false, skipped: true, id: row.id, type, reason: "ALREADY_SENT" };
+
+    let unpublishedCount = 0;
+    if (type === "expired") {
+      const result = await pool.query(
+        `UPDATE projects
+         SET status = 'unpublished', unpublished_at = NOW(), updated_at = NOW()
+         WHERE organization_id = $1 AND status = 'published'
+         RETURNING id`,
+        [row.id]
+      );
+      unpublishedCount = result.rowCount || 0;
+    }
+
+    const recipient = getPackAlertRecipients(row, adminEmail);
+    const commanditaireEmails = getCommanditaireEmailsFromProjectData(row.active_project_data || []);
+    const clientCc = uniqueEmails(recipient.clientCc, commanditaireEmails).filter(email => normalizeEmail(email) !== normalizeEmail(recipient.clientTo)).join(",");
+    const clientRecipient = { ...recipient, clientCc };
+
+    const internalMail = buildPackExpiryInternalEmail({ row, recipient, type, unpublishedCount });
+    const internalMailResult = await sendTransactionalEmail({
+      to: recipient.internalTo,
+      subject: internalMail.subject,
+      text: internalMail.text,
+      html: internalMail.html
+    });
+
+    let clientMailResult = { sent: false, reason: "NO_CLIENT_RECIPIENT" };
+    if (clientRecipient.clientTo) {
+      const clientMail = buildPackExpiryEmail({ row, recipient: clientRecipient, type, unpublishedCount });
+      clientMailResult = await sendTransactionalEmail({
+        to: clientRecipient.clientTo,
+        cc: clientRecipient.clientCc || undefined,
+        subject: clientMail.subject,
+        text: clientMail.text,
+        html: clientMail.html
+      });
+    }
+
+    const column = getPackExpiryColumn(type);
+    await pool.query(`UPDATE organizations SET ${column} = NOW() WHERE id = $1`, [row.id]);
+    return {
+      sent: true,
+      id: row.id,
+      organizationName: row.name,
+      type,
+      internalTo: recipient.internalTo,
+      clientTo: clientRecipient.clientTo || "",
+      clientCc: clientRecipient.clientCc || "",
+      internalEmailSent: internalMailResult.sent === true,
+      clientEmailSent: clientMailResult.sent === true,
+      unpublishedCount,
+      packExpiresAt: row.pack_expires_at
+    };
+  }
+
   async function sendPackAlertForOrganization(organizationId, { mode = "all" } = {}) {
     const result = await getSinglePackAlertRow(organizationId);
     const row = result.rows[0];
@@ -518,6 +750,10 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     const skipped = [];
 
     for (const row of result.rows) {
+      const expiryResult = await sendPackExpiryAlertForRow(row, { mode });
+      if (expiryResult.sent) sent.push(expiryResult);
+      else if (expiryResult.skipped && expiryResult.reason !== "NO_EXPIRY_MATCH") skipped.push(expiryResult);
+
       const alertResult = await sendPackAlertForRow(row, { mode });
       if (alertResult.sent) {
         sent.push(alertResult);
@@ -972,5 +1208,5 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     return { pack, totalSent: pack.sent.length, totalSkipped: pack.skipped.length };
   }
 
-  return { processPackAlerts, runPackAlerts, sendPackAlertForOrganization, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail };
+  return { processPackAlerts, runPackAlerts, sendPackExpiryAlertForRow, sendPackAlertForOrganization, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail };
 }

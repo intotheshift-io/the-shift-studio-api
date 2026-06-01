@@ -89,6 +89,10 @@ function formatOrganization(org) {
     passationsQuota: quota,
     passationsUsed: used,
     passationsRemaining: Math.max(0, quota - used),
+    packExpiresAt: org.pack_expires_at || null,
+    pack_expires_at: org.pack_expires_at || null,
+    packExpiredProcessedAt: org.pack_expired_processed_at || null,
+    pack_expired_processed_at: org.pack_expired_processed_at || null,
     packUpgradeRequested: org.pack_upgrade_requested === true,
     packUpgradeStatus: org.pack_upgrade_status || "",
     packUpgradeChoice: org.pack_upgrade_choice || "",
@@ -326,6 +330,31 @@ async function initDb() {
   await pool.query(`
     ALTER TABLE organizations
     ADD COLUMN IF NOT EXISTS pack_alert_empty_sent_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_expires_at DATE;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_expiry_alert_60_sent_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_expiry_alert_30_sent_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_expiry_alert_7_sent_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS pack_expired_processed_at TIMESTAMP;
   `);
 
 
@@ -578,6 +607,22 @@ function normalizeDateValue(value) {
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString().slice(0, 10);
+}
+
+function packIsActive(expiresAt) {
+  const normalized = normalizeDateValue(expiresAt);
+  if (!normalized) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const [y, m, d] = normalized.split('-').map(Number);
+  const expiry = new Date(y, m - 1, d);
+  return expiry.getTime() >= today.getTime();
+}
+
+function computeNextPackQuota({ currentQuota = 0, currentUsed = 0, amount = 0, expiresAt = null }) {
+  const remaining = Math.max(0, Number(currentQuota || 0) - Number(currentUsed || 0));
+  const safeAmount = Math.max(0, Number(amount || 0));
+  return packIsActive(expiresAt) ? remaining + safeAmount : safeAmount;
 }
 
 
@@ -914,7 +959,8 @@ async function getOrganizationForPackUpgrade(organizationId) {
        passations_used,
        passations_pack AS organization_passations_pack,
        passations_quota AS organization_passations_quota,
-       passations_used AS organization_passations_used
+       passations_used AS organization_passations_used,
+       pack_expires_at AS organization_pack_expires_at
      FROM organizations
      WHERE id = $1
      LIMIT 1`,
@@ -1183,6 +1229,7 @@ async function sendProjectPublicationEmail(projectId) {
       o.passations_pack AS organization_passations_pack,
       o.passations_quota AS organization_passations_quota,
       o.passations_used AS organization_passations_used,
+         o.pack_expires_at AS organization_pack_expires_at,
       client.email AS user_email,
       client.first_name AS user_first_name,
       client.last_name AS user_last_name,
@@ -2176,7 +2223,8 @@ app.get("/api/projects", auth, async (req, res) => {
        o.name AS organization_name,
        o.passations_pack AS organization_passations_pack,
        o.passations_quota AS organization_passations_quota,
-       o.passations_used AS organization_passations_used
+       o.passations_used AS organization_passations_used,
+         o.pack_expires_at AS organization_pack_expires_at
      FROM projects p
      LEFT JOIN organizations o ON o.id = p.organization_id
      LEFT JOIN organization_users ou ON ou.organization_id = p.organization_id AND ou.user_id = $1
@@ -2204,6 +2252,8 @@ app.get("/api/projects", auth, async (req, res) => {
           Number(row.organization_passations_quota || 0) -
           Number(row.organization_passations_used || 0)
         ),
+        organizationPackExpiresAt: row.organization_pack_expires_at || null,
+        organization_pack_expires_at: row.organization_pack_expires_at || null,
         shareUrl: row.share_url || "",
         resultsUrl: row.results_url || "",
         publishedAt: row.published_at || null,
@@ -2401,6 +2451,7 @@ app.get("/api/projects/:id", auth, async (req, res) => {
          o.passations_pack AS organization_passations_pack,
          o.passations_quota AS organization_passations_quota,
          o.passations_used AS organization_passations_used,
+         o.pack_expires_at AS organization_pack_expires_at,
          o.pack_upgrade_status AS organization_pack_upgrade_status
        FROM projects p
        LEFT JOIN organizations o ON o.id = p.organization_id
@@ -2439,6 +2490,8 @@ app.get("/api/projects/:id", auth, async (req, res) => {
           Number(row.organization_passations_quota || 0) -
           Number(row.organization_passations_used || 0)
         ),
+        organizationPackExpiresAt: row.organization_pack_expires_at || null,
+        organization_pack_expires_at: row.organization_pack_expires_at || null,
         shareUrl: row.share_url || "",
         resultsUrl: row.results_url || "",
         publishedAt: row.published_at || null,
@@ -3293,7 +3346,7 @@ app.patch("/api/admin/users/:id/status", auth, requireAdmin, async (req, res) =>
 
 app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
-  const { passationsPack, passationsQuota, passationsUsed } = req.body;
+  const { passationsPack, passationsQuota, passationsUsed, packExpiresAt, pack_expires_at } = req.body;
 
   try {
     const result = await pool.query(
@@ -3301,15 +3354,21 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
        SET passations_pack = $1,
            passations_quota = $2,
            passations_used = $3,
+           pack_expires_at = COALESCE($4::date, CASE WHEN COALESCE($2,0) > 0 OR COALESCE($1,'') <> '' THEN (CURRENT_DATE + INTERVAL '12 months')::date ELSE pack_expires_at END),
            pack_alert_low_sent_at = NULL,
            pack_alert_critical_sent_at = NULL,
-           pack_alert_empty_sent_at = NULL
-       WHERE id = $4
+           pack_alert_empty_sent_at = NULL,
+           pack_expiry_alert_60_sent_at = NULL,
+           pack_expiry_alert_30_sent_at = NULL,
+           pack_expiry_alert_7_sent_at = NULL,
+           pack_expired_processed_at = NULL
+       WHERE id = $5
        RETURNING *`,
       [
         passationsPack || null,
         Number(passationsQuota || 0),
         Number(passationsUsed || 0),
+        normalizeDateValue(packExpiresAt || pack_expires_at),
         id
       ]
     );
@@ -3606,6 +3665,7 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
       o.passations_pack AS organization_passations_pack,
       o.passations_quota AS organization_passations_quota,
       o.passations_used AS organization_passations_used,
+         o.pack_expires_at AS organization_pack_expires_at,
       u.id AS user_id,
       u.email,
       u.first_name,
@@ -3662,6 +3722,8 @@ app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
           Number(row.organization_passations_quota || 0) -
           Number(row.organization_passations_used || 0)
         ),
+        organizationPackExpiresAt: row.organization_pack_expires_at || null,
+        organization_pack_expires_at: row.organization_pack_expires_at || null,
         trialEndsAt: row.trial_ends_at,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
@@ -3729,6 +3791,7 @@ app.get("/api/admin/projects/:id", auth, requireAdmin, async (req, res) => {
         o.passations_pack AS organization_passations_pack,
         o.passations_quota AS organization_passations_quota,
         o.passations_used AS organization_passations_used,
+         o.pack_expires_at AS organization_pack_expires_at,
         u.email,
         u.first_name,
         u.last_name,
@@ -3896,6 +3959,12 @@ app.patch("/api/admin/organizations/:id/pack-upgrade", auth, requireAdmin, async
         `UPDATE organizations
          SET passations_pack = 'illimite',
              passations_quota = 0,
+             passations_used = 0,
+             pack_expires_at = (CURRENT_DATE + INTERVAL '12 months')::date,
+             pack_expiry_alert_60_sent_at = NULL,
+             pack_expiry_alert_30_sent_at = NULL,
+             pack_expiry_alert_7_sent_at = NULL,
+             pack_expired_processed_at = NULL,
              pack_upgrade_status = 'approved'
          WHERE id = $1
          RETURNING *`,
@@ -3909,11 +3978,18 @@ app.patch("/api/admin/organizations/:id/pack-upgrade", auth, requireAdmin, async
       }
 
       const currentQuota = Number(org.passations_quota || 0);
-      const nextQuota = currentQuota + amount;
+      const currentUsed = Number(org.passations_used || 0);
+      const nextQuota = computeNextPackQuota({ currentQuota, currentUsed, amount, expiresAt: org.pack_expires_at });
       updatedOrg = await client.query(
         `UPDATE organizations
          SET passations_pack = $1,
              passations_quota = $2,
+             passations_used = 0,
+             pack_expires_at = (CURRENT_DATE + INTERVAL '12 months')::date,
+             pack_expiry_alert_60_sent_at = NULL,
+             pack_expiry_alert_30_sent_at = NULL,
+             pack_expiry_alert_7_sent_at = NULL,
+             pack_expired_processed_at = NULL,
              pack_upgrade_status = 'approved',
              pack_upgrade_total_after = $2
          WHERE id = $3
@@ -3977,6 +4053,7 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
          o.passations_pack AS organization_passations_pack,
          o.passations_quota AS organization_passations_quota,
          o.passations_used AS organization_passations_used,
+         o.pack_expires_at AS organization_pack_expires_at,
          o.pack_upgrade_status AS organization_pack_upgrade_status
        FROM projects p
        LEFT JOIN organizations o ON o.id = p.organization_id
@@ -4041,7 +4118,13 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
       updatedOrg = await client.query(
         `UPDATE organizations
          SET passations_pack = 'illimite',
-             passations_quota = 0
+             passations_quota = 0,
+             passations_used = 0,
+             pack_expires_at = (CURRENT_DATE + INTERVAL '12 months')::date,
+             pack_expiry_alert_60_sent_at = NULL,
+             pack_expiry_alert_30_sent_at = NULL,
+             pack_expiry_alert_7_sent_at = NULL,
+             pack_expired_processed_at = NULL
          WHERE id = $1
          RETURNING *`,
         [project.organization_id]
@@ -4054,12 +4137,19 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
       }
 
       const currentQuota = Number(org.passations_quota || 0);
-      const nextQuota = currentQuota + amount;
+      const currentUsed = Number(org.passations_used || 0);
+      const nextQuota = computeNextPackQuota({ currentQuota, currentUsed, amount, expiresAt: org.pack_expires_at });
 
       updatedOrg = await client.query(
         `UPDATE organizations
          SET passations_pack = $1,
-             passations_quota = $2
+             passations_quota = $2,
+             passations_used = 0,
+             pack_expires_at = (CURRENT_DATE + INTERVAL '12 months')::date,
+             pack_expiry_alert_60_sent_at = NULL,
+             pack_expiry_alert_30_sent_at = NULL,
+             pack_expiry_alert_7_sent_at = NULL,
+             pack_expired_processed_at = NULL
          WHERE id = $3
          RETURNING *`,
         [String(nextQuota), nextQuota, project.organization_id]
@@ -4158,6 +4248,7 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
          o.passations_pack AS organization_passations_pack,
          o.passations_quota AS organization_passations_quota,
          o.passations_used AS organization_passations_used,
+         o.pack_expires_at AS organization_pack_expires_at,
          o.pack_upgrade_status AS organization_pack_upgrade_status
        FROM projects p
        LEFT JOIN organizations o ON o.id = p.organization_id
