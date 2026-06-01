@@ -538,6 +538,34 @@ async function initDb() {
 
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id SERIAL PRIMARY KEY,
+      audience TEXT NOT NULL DEFAULT 'client',
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+      project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+      type TEXT NOT NULL DEFAULT 'info',
+      title TEXT NOT NULL,
+      message TEXT,
+      action_url TEXT,
+      metadata JSONB DEFAULT '{}'::jsonb,
+      read_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_notifications_user_unread
+    ON notifications(user_id, read_at, created_at DESC);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_notifications_org_unread
+    ON notifications(organization_id, read_at, created_at DESC);
+  `);
+
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS project_communication_assets (
       id SERIAL PRIMARY KEY,
       project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -1276,6 +1304,13 @@ async function sendProjectPublicationEmail(projectId) {
 
   if (mailResult.sent) {
     await pool.query(`UPDATE projects SET publication_email_sent_at = NOW() WHERE id = $1`, [projectId]);
+    await createClientNotificationForProject(projectId, {
+      type: "published",
+      title: "Autodiagnostic publié",
+      message: `Votre autodiagnostic « ${extractProjectDisplayTitle(row.data || {}, row.title || "votre autodiagnostic")} » est maintenant publié.`,
+      actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(projectId)}`,
+      metadata: { email: "publication", shareUrl: row.share_url || "", resultsUrl: row.results_url || "" }
+    });
   }
 
   return {
@@ -1560,6 +1595,16 @@ async function sendCommunicationLinksUpdatedEmail(projectId) {
     html: mail.html
   });
 
+  if (mailResult.sent) {
+    await createClientNotificationForProject(projectId, {
+      type: "links",
+      title: "Liens de campagne mis à jour",
+      message: `Les liens de campagne de votre autodiagnostic « ${extractProjectDisplayTitle(row.data || {}, row.title || "votre autodiagnostic")} » ont été mis à jour.`,
+      actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(projectId)}`,
+      metadata: { email: "communication_links_updated" }
+    });
+  }
+
   return {
     ...mailResult,
     to: recipient.to,
@@ -1567,13 +1612,100 @@ async function sendCommunicationLinksUpdatedEmail(projectId) {
   };
 }
 
-const campaignAlerts = createCampaignAlerts({ pool, sendTransactionalEmail });
+
+function normalizeNotificationAudience(value = "client") {
+  const audience = String(value || "client").toLowerCase();
+  return ["admin", "client", "partner"].includes(audience) ? audience : "client";
+}
+
+function normalizeNotificationUrl(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return raw.startsWith("/") ? raw : `/${raw}`;
+}
+
+async function createNotification({ audience = "client", userId = null, organizationId = null, projectId = null, type = "info", title = "Notification", message = "", actionUrl = "", metadata = {} } = {}) {
+  try {
+    const safeAudience = normalizeNotificationAudience(audience);
+    const result = await pool.query(
+      `INSERT INTO notifications (audience, user_id, organization_id, project_id, type, title, message, action_url, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+       RETURNING *`,
+      [
+        safeAudience,
+        userId || null,
+        organizationId || null,
+        projectId || null,
+        String(type || "info"),
+        String(title || "Notification"),
+        String(message || ""),
+        normalizeNotificationUrl(actionUrl),
+        JSON.stringify(metadata && typeof metadata === "object" ? metadata : {})
+      ]
+    );
+    return result.rows[0] || null;
+  } catch (err) {
+    console.error("Erreur création notification", err);
+    return null;
+  }
+}
+
+async function createAdminNotificationForProject(projectId, payload = {}) {
+  return createNotification({ audience: "admin", projectId, ...payload });
+}
+
+async function createClientNotificationForProject(projectId, payload = {}) {
+  if (!projectId) return null;
+  const result = await pool.query(
+    `SELECT user_id, organization_id FROM projects WHERE id = $1 LIMIT 1`,
+    [projectId]
+  );
+  const row = result.rows[0] || {};
+  return createNotification({ audience: "client", userId: row.user_id || null, organizationId: row.organization_id || null, projectId, ...payload });
+}
+
+async function createClientNotificationForOrganization(organizationId, payload = {}) {
+  if (!organizationId) return null;
+  return createNotification({ audience: "client", organizationId, ...payload });
+}
+
+async function getUserNotificationOrganizationIds(userId) {
+  const result = await pool.query(
+    `SELECT organization_id FROM organization_users WHERE user_id = $1
+     UNION
+     SELECT id AS organization_id FROM organizations WHERE created_by = $1`,
+    [userId]
+  );
+  return result.rows.map(row => row.organization_id).filter(Boolean);
+}
+
+function formatNotification(row = {}) {
+  return {
+    id: row.id,
+    audience: row.audience,
+    userId: row.user_id || null,
+    organizationId: row.organization_id || null,
+    projectId: row.project_id || null,
+    type: row.type || "info",
+    title: row.title || "Notification",
+    message: row.message || "",
+    actionUrl: row.action_url || "",
+    metadata: row.metadata || {},
+    readAt: row.read_at || null,
+    createdAt: row.created_at || null,
+    unread: !row.read_at
+  };
+}
+
+const campaignAlerts = createCampaignAlerts({ pool, sendTransactionalEmail, createNotification });
 const { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendTransmissionEmails, sendExtensionEmails, sendReprogrammingEmails } = campaignAlerts;
 
 const packAlerts = createPackAlerts({
   pool,
   sendTransactionalEmail,
-  adminEmail: process.env.ALERT_ADMIN_EMAIL || "contact@intotheshift.io"
+  adminEmail: process.env.ALERT_ADMIN_EMAIL || "contact@intotheshift.io",
+  createNotification
 });
 const { processPackAlerts, runPackAlerts, sendPackAlertForOrganization, sendPackUpgradeRequestEmail, sendPackUpgradeApprovedEmail, sendAccountPackUpgradeRequestEmail, sendAccountPackUpgradeApprovedEmail, sendPackRepublishedAfterRechargeEmail } = packAlerts;
 
@@ -2017,6 +2149,97 @@ app.get("/api/me", auth, async (req, res) => {
   );
 
   res.json({ user: formatUser(result.rows[0]) });
+});
+
+
+app.get("/api/notifications", auth, async (req, res) => {
+  try {
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit || 20)));
+    const role = String(req.user.role || "client").toLowerCase();
+    const orgIds = await getUserNotificationOrganizationIds(req.user.id);
+    const params = [req.user.id, limit];
+    let orgClause = "";
+
+    if (orgIds.length) {
+      params.push(orgIds);
+      orgClause = `OR (audience IN ('client','partner') AND organization_id = ANY($3::int[]))`;
+    }
+
+    const adminClause = role === "admin" ? "OR audience = 'admin'" : "";
+    const result = await pool.query(
+      `SELECT *
+       FROM notifications
+       WHERE user_id = $1
+          ${orgClause}
+          ${adminClause}
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      params
+    );
+
+    const unread = result.rows.filter(row => !row.read_at).length;
+    res.json({ notifications: result.rows.map(formatNotification), unread });
+  } catch (err) {
+    console.error("GET /api/notifications", err);
+    res.status(500).json({ error: "Erreur chargement notifications." });
+  }
+});
+
+app.patch("/api/notifications/:id/read", auth, async (req, res) => {
+  try {
+    const role = String(req.user.role || "client").toLowerCase();
+    const orgIds = await getUserNotificationOrganizationIds(req.user.id);
+    const params = [req.params.id, req.user.id];
+    let orgClause = "";
+    if (orgIds.length) {
+      params.push(orgIds);
+      orgClause = `OR (audience IN ('client','partner') AND organization_id = ANY($3::int[]))`;
+    }
+    const adminClause = role === "admin" ? "OR audience = 'admin'" : "";
+
+    const result = await pool.query(
+      `UPDATE notifications
+       SET read_at = COALESCE(read_at, NOW())
+       WHERE id = $1
+         AND (user_id = $2 ${orgClause} ${adminClause})
+       RETURNING *`,
+      params
+    );
+
+    if (!result.rows[0]) return res.status(404).json({ error: "Notification introuvable" });
+    res.json({ notification: formatNotification(result.rows[0]) });
+  } catch (err) {
+    console.error("PATCH /api/notifications/:id/read", err);
+    res.status(500).json({ error: "Erreur mise à jour notification." });
+  }
+});
+
+app.patch("/api/notifications/read-all", auth, async (req, res) => {
+  try {
+    const role = String(req.user.role || "client").toLowerCase();
+    const orgIds = await getUserNotificationOrganizationIds(req.user.id);
+    const params = [req.user.id];
+    let orgClause = "";
+    if (orgIds.length) {
+      params.push(orgIds);
+      orgClause = `OR (audience IN ('client','partner') AND organization_id = ANY($2::int[]))`;
+    }
+    const adminClause = role === "admin" ? "OR audience = 'admin'" : "";
+
+    const result = await pool.query(
+      `UPDATE notifications
+       SET read_at = COALESCE(read_at, NOW())
+       WHERE read_at IS NULL
+         AND (user_id = $1 ${orgClause} ${adminClause})
+       RETURNING id`,
+      params
+    );
+
+    res.json({ ok: true, updated: result.rowCount || 0 });
+  } catch (err) {
+    console.error("PATCH /api/notifications/read-all", err);
+    res.status(500).json({ error: "Erreur mise à jour notifications." });
+  }
 });
 
 app.get("/api/me/organization-quota", auth, async (req, res) => {

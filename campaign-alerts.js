@@ -474,7 +474,37 @@ Le fichier Excel de configuration est joint à cet email.`,
 }
 
 
-export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
+export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotification = null }) {
+  function getNotificationProjectId(body = {}) {
+    const payload = body.payload && typeof body.payload === "object" ? body.payload : {};
+    return body.projectId || body.project_id || body.id || payload.projectId || payload.project_id || payload.id || null;
+  }
+
+  async function notifyClientFromBody(body = {}, payload = {}) {
+    if (typeof createNotification !== "function") return null;
+    const projectId = getNotificationProjectId(body);
+    const sourcePayload = body.payload && typeof body.payload === "object" ? body.payload : body;
+    const organizationId = body.organizationId || body.organization_id || sourcePayload.organizationId || sourcePayload.organization_id || null;
+    const userId = body.userId || body.user_id || sourcePayload.userId || sourcePayload.user_id || null;
+    return createNotification({
+      audience: "client",
+      userId: userId || null,
+      organizationId: organizationId || null,
+      projectId: projectId || null,
+      ...payload
+    });
+  }
+
+  async function notifyAdminFromBody(body = {}, payload = {}) {
+    if (typeof createNotification !== "function") return null;
+    const projectId = getNotificationProjectId(body);
+    return createNotification({
+      audience: "admin",
+      projectId: projectId || null,
+      ...payload
+    });
+  }
+
   async function autoUnpublishExpiredProjects() {
     await pool.query(`
       UPDATE projects
@@ -490,7 +520,7 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
   async function getCampaignAlertRows({ type, daysBefore }) {
     if (type === "unpublished") {
       return pool.query(`
-        SELECT p.id, p.title, p.data, p.campaign_end_date, p.results_url, p.share_url,
+        SELECT p.id, p.user_id, p.organization_id, p.title, p.data, p.campaign_end_date, p.results_url, p.share_url,
           o.name AS organization_name, o.contact_email, o.contact_name,
           client.email AS user_email, client.first_name AS user_first_name, client.last_name AS user_last_name, client.company_name AS user_company_name,
           partner.email AS partner_email, partner.first_name AS partner_first_name, partner.last_name AS partner_last_name, partner.company_name AS partner_company_name
@@ -507,7 +537,7 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
 
     const sentColumn = Number(daysBefore) === 2 ? "end_alert_2_sent_at" : "end_alert_7_sent_at";
     return pool.query(`
-      SELECT p.id, p.title, p.data, p.campaign_end_date, p.results_url, p.share_url,
+      SELECT p.id, p.user_id, p.organization_id, p.title, p.data, p.campaign_end_date, p.results_url, p.share_url,
         o.name AS organization_name, o.contact_email, o.contact_name,
         client.email AS user_email, client.first_name AS user_first_name, client.last_name AS user_last_name, client.company_name AS user_company_name,
         partner.email AS partner_email, partner.first_name AS partner_first_name, partner.last_name AS partner_last_name, partner.company_name AS partner_company_name
@@ -549,6 +579,22 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
         await pool.query(`UPDATE projects SET end_alert_2_sent_at = NOW() WHERE id = $1`, [row.id]);
       } else {
         await pool.query(`UPDATE projects SET end_alert_7_sent_at = NOW() WHERE id = $1`, [row.id]);
+      }
+
+      if (typeof createNotification === "function") {
+        await createNotification({
+          audience: "client",
+          userId: row.user_id || null,
+          organizationId: row.organization_id || null,
+          projectId: row.id,
+          type: type === "unpublished" ? "unpublished" : "ending",
+          title: type === "unpublished" ? "Campagne terminée" : `Campagne bientôt terminée · J-${daysBefore}`,
+          message: type === "unpublished"
+            ? `La campagne « ${row.title || "votre autodiagnostic"} » est maintenant terminée.`
+            : `La campagne « ${row.title || "votre autodiagnostic"} » se termine dans ${daysBefore} jour${Number(daysBefore) > 1 ? "s" : ""}.`,
+          actionUrl: type === "unpublished" ? `/mes-autodiagnostics.html` : `/kit-communication.html?projectId=${encodeURIComponent(row.id)}`,
+          metadata: { email: type === "unpublished" ? "campaign_unpublished" : "campaign_ending", daysBefore: type === "unpublished" ? null : daysBefore }
+        });
       }
 
       sent.push({ id: row.id, to: recipient.to, cc: recipient.cc || "", type, daysBefore: type === "unpublished" ? null : daysBefore });
@@ -637,6 +683,16 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
     const adminMailConfig = buildAdminExtensionEmail(ctx);
     const adminMail = await sendTransactionalEmail(adminMailConfig);
 
+    if (clientMail.sent) {
+      await notifyClientFromBody(body, {
+        type: "extended",
+        title: "Campagne prolongée",
+        message: `La campagne « ${ctx.autodiagTitle || "votre autodiagnostic"} » a été prolongée.`,
+        actionUrl: "/mes-autodiagnostics.html",
+        metadata: { email: "campaign_extended", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "" }
+      });
+    }
+
     return {
       ok: clientMail.sent && adminMail.sent,
       ctx,
@@ -688,6 +744,16 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
 
     const adminMail = await sendTransactionalEmail(buildAdminReprogrammingEmail(ctx));
 
+    if (clientMail.sent) {
+      await notifyClientFromBody(body, {
+        type: "reprogrammed",
+        title: "Campagne reprogrammée",
+        message: `La campagne « ${ctx.autodiagTitle || "votre autodiagnostic"} » a été reprogrammée.`,
+        actionUrl: "/mes-autodiagnostics.html",
+        metadata: { email: "campaign_reprogrammed", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "" }
+      });
+    }
+
     return {
       ok: clientMail.sent && adminMail.sent,
       ctx,
@@ -737,6 +803,25 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail }) {
 
     const adminMailConfig = buildAdminTransmissionEmail(ctx);
     const adminMail = await sendTransactionalEmail(adminMailConfig);
+
+    if (clientMail.sent) {
+      await notifyClientFromBody(body, {
+        type: "submitted",
+        title: "Configuration transmise",
+        message: `Votre configuration « ${ctx.autodiagTitle || "votre autodiagnostic"} » a bien été transmise à Into The Shift.`,
+        actionUrl: "/mes-autodiagnostics.html",
+        metadata: { email: "transmission_client" }
+      });
+    }
+    if (adminMail.sent) {
+      await notifyAdminFromBody(body, {
+        type: "submitted",
+        title: "Nouvelle configuration à publier",
+        message: `Une configuration client vient d’être transmise : ${ctx.autodiagTitle || "autodiagnostic sans titre"}.`,
+        actionUrl: "/admin.html",
+        metadata: { email: "transmission_admin", clientEmail: ctx.clientEmail || "", companyName: ctx.companyName || "" }
+      });
+    }
 
     return {
       ok: clientMail.sent && adminMail.sent,

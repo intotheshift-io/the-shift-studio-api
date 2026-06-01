@@ -616,7 +616,17 @@ L’équipe Into The Shift`,
 }
 
 
-export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DEFAULT_ADMIN_EMAIL }) {
+export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DEFAULT_ADMIN_EMAIL, createNotification = null }) {
+  async function notifyClientOrganization(organizationId, payload = {}) {
+    if (typeof createNotification !== "function" || !organizationId) return null;
+    return createNotification({ audience: "client", organizationId, ...payload });
+  }
+
+  async function notifyAdmin(payload = {}) {
+    if (typeof createNotification !== "function") return null;
+    return createNotification({ audience: "admin", ...payload });
+  }
+
   async function getPackAlertRows() {
     return pool.query(`
       SELECT
@@ -750,6 +760,21 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
         : "pack_alert_low_sent_at";
 
     await pool.query(`UPDATE organizations SET ${column} = NOW() WHERE id = $1`, [row.id]);
+
+    await notifyClientOrganization(row.id, {
+      type: status.type === "empty" ? "pack_empty" : status.type === "critical" ? "pack_critical" : "pack_low",
+      title: status.type === "empty" ? "Pack épuisé" : status.type === "critical" ? "Pack critique" : "Pack bientôt épuisé",
+      message: `Il reste ${status.remaining.toLocaleString("fr-FR")} passation${status.remaining > 1 ? "s" : ""} sur ${status.quota.toLocaleString("fr-FR")} pour ${row.name || "votre organisation"}.`,
+      actionUrl: "/account.html?tab=quota",
+      metadata: { email: "pack_alert", remaining: status.remaining, quota: status.quota, used: status.used }
+    });
+    await notifyAdmin({
+      type: status.type === "empty" ? "pack_empty" : status.type === "critical" ? "pack_critical" : "pack_low",
+      title: `${status.label} — ${row.name || "Client"}`,
+      message: `Passations restantes : ${status.remaining.toLocaleString("fr-FR")} / ${status.quota.toLocaleString("fr-FR")}.`,
+      actionUrl: `/client-folder.html?id=${encodeURIComponent(row.id)}`,
+      metadata: { email: "pack_alert_internal", organizationId: row.id }
+    });
 
     return {
       sent: true,
@@ -1000,6 +1025,25 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
         });
       }
 
+      if (internalMailResult.sent) {
+        await notifyAdmin({
+          type: "pack_upgrade_request",
+          title: `Demande de recharge — ${row.organization_name || "Client"}`,
+          message: `Une demande de recharge est à traiter pour ${row.organization_name || "un client"}.`,
+          actionUrl: `/client-folder.html?id=${encodeURIComponent(row.organization_id || "")}`,
+          metadata: { email: "pack_upgrade_request_internal", projectId }
+        });
+      }
+      if (clientMailResult.sent) {
+        await notifyClientOrganization(row.organization_id, {
+          type: "pack_upgrade_request",
+          title: "Demande de recharge transmise",
+          message: "Votre demande de recharge a bien été transmise à Into The Shift.",
+          actionUrl: "/account.html?tab=quota",
+          metadata: { email: "pack_upgrade_request_client", projectId }
+        });
+      }
+
       return {
         sent: internalMailResult.sent === true,
         internalTo: recipient.internalTo,
@@ -1111,6 +1155,25 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
         subject: clientMail.subject,
         text: clientMail.text,
         html: clientMail.html
+      });
+    }
+
+    if (internalMailResult.sent) {
+      await notifyAdmin({
+        type: 'pack_upgrade_request',
+        title: `Demande de recharge — ${row.organization_name || 'Client'}`,
+        message: `Une demande de recharge est à traiter pour ${row.organization_name || 'un client'}.`,
+        actionUrl: `/client-folder.html?id=${encodeURIComponent(organizationId)}`,
+        metadata: { email: 'account_pack_upgrade_request_internal', organizationId, userId }
+      });
+    }
+    if (clientMailResult.sent) {
+      await notifyClientOrganization(organizationId, {
+        type: 'pack_upgrade_request',
+        title: 'Demande de recharge transmise',
+        message: 'Votre demande de recharge a bien été transmise à Into The Shift.',
+        actionUrl: '/account.html?tab=quota',
+        metadata: { email: 'account_pack_upgrade_request_client', organizationId, userId }
       });
     }
 
@@ -1315,6 +1378,13 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
 
     if (clientMailResult.sent) {
       await pool.query(`UPDATE organizations SET pack_upgrade_approved_email_sent_at = NOW() WHERE id = $1`, [organizationId]);
+      await notifyClientOrganization(organizationId, {
+        type: 'pack_upgrade_approved',
+        title: 'Recharge validée',
+        message: 'Votre demande de recharge a été validée. Into The Shift va vous envoyer un devis.',
+        actionUrl: '/account.html?tab=quota',
+        metadata: { email: 'account_pack_upgrade_approved_client', organizationId }
+      });
     }
 
     return {
