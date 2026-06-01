@@ -638,7 +638,7 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
       organizationId,
       projectId,
       ...payload,
-      actionUrl: payload.actionUrl || (organizationId ? `/client-folder.html?id=${encodeURIComponent(organizationId)}` : ""),
+      actionUrl: organizationId ? `/client-folder.html?id=${encodeURIComponent(organizationId)}` : (payload.actionUrl || ""),
       metadata: { ...metadata, organizationId, projectId }
     });
   }

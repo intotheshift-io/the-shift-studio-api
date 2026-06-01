@@ -1654,12 +1654,20 @@ async function createNotification({ audience = "client", userId = null, organiza
       finalOrganizationId = finalOrganizationId || target.organization_id || null;
     }
 
+    if (finalOrganizationId && !finalUserId) {
+      const orgOwnerResult = await pool.query(
+        `SELECT created_by FROM organizations WHERE id = $1 LIMIT 1`,
+        [finalOrganizationId]
+      );
+      finalUserId = orgOwnerResult.rows[0]?.created_by || null;
+    }
+
     const safeMetadata = metadata && typeof metadata === "object" ? { ...metadata } : {};
     if (finalProjectId && !safeMetadata.projectId) safeMetadata.projectId = finalProjectId;
     if (finalOrganizationId && !safeMetadata.organizationId) safeMetadata.organizationId = finalOrganizationId;
     if (finalUserId && !safeMetadata.userId) safeMetadata.userId = finalUserId;
 
-    const finalActionUrl = safeAudience === "admin" && finalOrganizationId && !actionUrl
+    const finalActionUrl = safeAudience === "admin" && finalOrganizationId
       ? `/client-folder.html?id=${encodeURIComponent(finalOrganizationId)}`
       : normalizeNotificationUrl(actionUrl);
 
@@ -5425,22 +5433,40 @@ app.delete("/api/admin/users/:id", auth, requireAdmin, async (req, res) => {
 
 
 function extractProjectIdFromTransmissionBody(body = {}) {
-  return (
-    body.projectId ||
-    body.project_id ||
-    body.currentProjectId ||
-    body.current_project_id ||
-    body.currentAdId ||
-    body.current_ad_id ||
-    body.data?.projectId ||
-    body.data?.project_id ||
-    body.data?.currentAdId ||
-    body.state?.projectId ||
-    body.state?.project_id ||
-    body.payload?.projectId ||
-    body.payload?.project_id ||
-    null
-  );
+  const sources = [
+    body,
+    body?.payload,
+    body?.data,
+    body?.state,
+    body?.payload?.data,
+    body?.payload?.state,
+    body?.data?.payload,
+    body?.data?.state,
+    body?.state?.payload,
+    body?.state?.data,
+    body?.transmission,
+    body?.payload?.transmission,
+    body?.data?.transmission,
+    body?.state?.transmission
+  ].filter(item => item && typeof item === "object");
+
+  for (const source of sources) {
+    const value =
+      source.projectId ||
+      source.project_id ||
+      source.currentProjectId ||
+      source.current_project_id ||
+      source.currentAdId ||
+      source.current_ad_id ||
+      source.adId ||
+      source.ad_id ||
+      source.id;
+
+    const numeric = Number(value);
+    if (Number.isInteger(numeric) && numeric > 0) return numeric;
+  }
+
+  return null;
 }
 
 function withNotificationTargetIds(body = {}, target = {}) {
@@ -5510,7 +5536,14 @@ function withNotificationTargetIds(body = {}, target = {}) {
 async function enrichTransmissionPayloadForNotifications(req) {
   const body = req.body || {};
   const projectId = extractProjectIdFromTransmissionBody(body);
-  if (!projectId) return body;
+
+  if (!projectId) {
+    const organizationId = await getUserPrimaryOrganizationId(req.user.id);
+    return withNotificationTargetIds(body, {
+      organizationId: organizationId || null,
+      userId: req.user.id || null
+    });
+  }
 
   const result = await pool.query(
     `SELECT id, user_id, organization_id
@@ -5527,11 +5560,19 @@ async function enrichTransmissionPayloadForNotifications(req) {
   );
 
   const row = result.rows[0];
-  if (!row) return body;
+  if (!row) {
+    const organizationId = await getUserPrimaryOrganizationId(req.user.id);
+    return withNotificationTargetIds(body, {
+      projectId,
+      organizationId: organizationId || null,
+      userId: req.user.id || null
+    });
+  }
+
   return withNotificationTargetIds(body, {
     projectId: row.id,
     organizationId: row.organization_id || null,
-    userId: row.user_id || null
+    userId: row.user_id || req.user.id || null
   });
 }
 
