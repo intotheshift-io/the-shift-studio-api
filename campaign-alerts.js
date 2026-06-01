@@ -477,31 +477,80 @@ Le fichier Excel de configuration est joint à cet email.`,
 export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotification = null }) {
   function getNotificationProjectId(body = {}) {
     const payload = body.payload && typeof body.payload === "object" ? body.payload : {};
-    return body.projectId || body.project_id || body.id || payload.projectId || payload.project_id || payload.id || null;
+    const data = body.data && typeof body.data === "object" ? body.data : {};
+    const state = body.state && typeof body.state === "object" ? body.state : {};
+    return (
+      body.projectId || body.project_id || body.id ||
+      body.currentProjectId || body.current_project_id || body.currentAdId || body.current_ad_id ||
+      payload.projectId || payload.project_id || payload.id ||
+      payload.currentProjectId || payload.current_project_id || payload.currentAdId || payload.current_ad_id ||
+      data.projectId || data.project_id || data.currentProjectId || data.current_project_id || data.currentAdId || data.current_ad_id ||
+      state.projectId || state.project_id || state.currentProjectId || state.current_project_id || state.currentAdId || state.current_ad_id ||
+      null
+    );
+  }
+
+  function getNotificationBodyIds(body = {}) {
+    const payload = body.payload && typeof body.payload === "object" ? body.payload : {};
+    const data = body.data && typeof body.data === "object" ? body.data : {};
+    const state = body.state && typeof body.state === "object" ? body.state : {};
+    return {
+      projectId: getNotificationProjectId(body),
+      organizationId: body.organizationId || body.organization_id || payload.organizationId || payload.organization_id || data.organizationId || data.organization_id || state.organizationId || state.organization_id || null,
+      userId: body.userId || body.user_id || payload.userId || payload.user_id || data.userId || data.user_id || state.userId || state.user_id || null
+    };
+  }
+
+  async function resolveNotificationTarget(body = {}) {
+    const ids = getNotificationBodyIds(body);
+    if ((!ids.organizationId || !ids.userId) && ids.projectId) {
+      try {
+        const result = await pool.query(
+          `SELECT user_id, organization_id FROM projects WHERE id = $1 LIMIT 1`,
+          [ids.projectId]
+        );
+        const row = result.rows[0] || {};
+        ids.organizationId = ids.organizationId || row.organization_id || null;
+        ids.userId = ids.userId || row.user_id || null;
+      } catch (err) {
+        console.error("Erreur résolution cible notification campagne", err);
+      }
+    }
+    return ids;
   }
 
   async function notifyClientFromBody(body = {}, payload = {}) {
     if (typeof createNotification !== "function") return null;
-    const projectId = getNotificationProjectId(body);
-    const sourcePayload = body.payload && typeof body.payload === "object" ? body.payload : body;
-    const organizationId = body.organizationId || body.organization_id || sourcePayload.organizationId || sourcePayload.organization_id || null;
-    const userId = body.userId || body.user_id || sourcePayload.userId || sourcePayload.user_id || null;
+    const target = await resolveNotificationTarget(body);
     return createNotification({
       audience: "client",
-      userId: userId || null,
-      organizationId: organizationId || null,
-      projectId: projectId || null,
-      ...payload
+      userId: target.userId || null,
+      organizationId: target.organizationId || null,
+      projectId: target.projectId || null,
+      ...payload,
+      metadata: {
+        ...((payload.metadata && typeof payload.metadata === "object") ? payload.metadata : {}),
+        projectId: target.projectId || null,
+        organizationId: target.organizationId || null
+      }
     });
   }
 
   async function notifyAdminFromBody(body = {}, payload = {}) {
     if (typeof createNotification !== "function") return null;
-    const projectId = getNotificationProjectId(body);
+    const target = await resolveNotificationTarget(body);
+    const metadata = (payload.metadata && typeof payload.metadata === "object") ? payload.metadata : {};
     return createNotification({
       audience: "admin",
-      projectId: projectId || null,
-      ...payload
+      organizationId: target.organizationId || null,
+      projectId: target.projectId || null,
+      ...payload,
+      actionUrl: target.organizationId ? `/client-folder.html?id=${encodeURIComponent(target.organizationId)}` : (payload.actionUrl || "/admin.html#organizations"),
+      metadata: {
+        ...metadata,
+        projectId: target.projectId || null,
+        organizationId: target.organizationId || null
+      }
     });
   }
 
@@ -818,7 +867,7 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
         type: "submitted",
         title: "Nouvelle configuration à publier",
         message: `Une configuration client vient d’être transmise : ${ctx.autodiagTitle || "autodiagnostic sans titre"}.`,
-        actionUrl: "/admin.html",
+        actionUrl: "/admin.html#organizations",
         metadata: { email: "transmission_admin", clientEmail: ctx.clientEmail || "", companyName: ctx.companyName || "" }
       });
     }
