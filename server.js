@@ -1753,9 +1753,10 @@ function normalizeNotificationUrl(value = "") {
 async function createNotification({ audience = "client", userId = null, organizationId = null, projectId = null, type = "info", title = "Notification", message = "", actionUrl = "", metadata = {} } = {}) {
   try {
     const safeAudience = normalizeNotificationAudience(audience);
-    let finalUserId = userId || null;
-    let finalOrganizationId = organizationId || null;
-    const finalProjectId = projectId || null;
+    const inputMetadata = metadata && typeof metadata === "object" ? metadata : {};
+    let finalUserId = userId || inputMetadata.userId || inputMetadata.user_id || null;
+    let finalOrganizationId = organizationId || inputMetadata.organizationId || inputMetadata.organization_id || null;
+    let finalProjectId = projectId || inputMetadata.projectId || inputMetadata.project_id || null;
 
     // Sécurise les notifications liées à un AD : même si l'appelant ne transmet
     // que le projectId, on rattache toujours la notif au cockpit client concerné.
@@ -1779,6 +1780,17 @@ async function createNotification({ audience = "client", userId = null, organiza
     const finalType = String(type || "info");
     const finalTitle = String(title || "Notification");
     const finalMessage = String(message || "");
+    console.log("[ITS NOTIF DEBUG][CREATE]", {
+      audience: safeAudience,
+      userId: finalUserId,
+      organizationId: finalOrganizationId,
+      projectId: finalProjectId,
+      type: finalType,
+      title: finalTitle,
+      actionUrl: finalActionUrl,
+      metadata: safeMetadata
+    });
+
     const result = await pool.query(
       `INSERT INTO notifications (audience, user_id, organization_id, project_id, type, title, message, action_url, metadata)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
@@ -2352,6 +2364,7 @@ app.get("/api/notifications", auth, async (req, res) => {
     }
 
     const adminClause = role === "admin" ? "OR n.audience = 'admin'" : "";
+    console.log("[ITS NOTIF DEBUG][GET]", { userId: req.user.id, role, orgIds, limit });
     const result = await pool.query(
       `SELECT
          n.*,
@@ -5710,6 +5723,93 @@ function extractProjectIdFromTransmissionBody(body = {}) {
   );
 }
 
+
+async function enrichTransmissionPayloadForNotificationRouting(req) {
+  const originalBody = req.body && typeof req.body === "object" ? req.body : {};
+  const projectId = extractProjectIdFromTransmissionBody(originalBody);
+
+  if (!projectId) {
+    console.warn("[ITS NOTIF DEBUG][TRANSMISSION] Aucun projectId dans le payload de transmission", {
+      userId: req.user?.id || null,
+      bodyKeys: Object.keys(originalBody || {}),
+      payloadKeys: originalBody.payload && typeof originalBody.payload === "object" ? Object.keys(originalBody.payload) : []
+    });
+    return originalBody;
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT id, user_id, organization_id, title, share_url, results_url, campaign_start_date, campaign_end_date
+       FROM projects
+       WHERE id = $1
+       LIMIT 1`,
+      [projectId]
+    );
+    const project = result.rows[0] || null;
+
+    if (!project) {
+      console.warn("[ITS NOTIF DEBUG][TRANSMISSION] projectId introuvable", { projectId, userId: req.user?.id || null });
+      return originalBody;
+    }
+
+    const payload = originalBody.payload && typeof originalBody.payload === "object"
+      ? { ...originalBody.payload }
+      : {};
+
+    const enriched = {
+      ...originalBody,
+      projectId: project.id,
+      project_id: project.id,
+      currentProjectId: project.id,
+      current_project_id: project.id,
+      currentAdId: project.id,
+      current_ad_id: project.id,
+      userId: originalBody.userId || originalBody.user_id || project.user_id || null,
+      user_id: originalBody.user_id || originalBody.userId || project.user_id || null,
+      organizationId: originalBody.organizationId || originalBody.organization_id || project.organization_id || null,
+      organization_id: originalBody.organization_id || originalBody.organizationId || project.organization_id || null,
+      shareUrl: originalBody.shareUrl || originalBody.share_url || project.share_url || "",
+      share_url: originalBody.share_url || originalBody.shareUrl || project.share_url || "",
+      resultsUrl: originalBody.resultsUrl || originalBody.results_url || project.results_url || "",
+      results_url: originalBody.results_url || originalBody.resultsUrl || project.results_url || "",
+      campaignStartDate: originalBody.campaignStartDate || originalBody.campaign_start_date || project.campaign_start_date || null,
+      campaign_start_date: originalBody.campaign_start_date || originalBody.campaignStartDate || project.campaign_start_date || null,
+      campaignEndDate: originalBody.campaignEndDate || originalBody.campaign_end_date || project.campaign_end_date || null,
+      campaign_end_date: originalBody.campaign_end_date || originalBody.campaignEndDate || project.campaign_end_date || null,
+      payload: {
+        ...payload,
+        projectId: payload.projectId || payload.project_id || project.id,
+        project_id: payload.project_id || payload.projectId || project.id,
+        currentProjectId: payload.currentProjectId || payload.current_project_id || project.id,
+        current_project_id: payload.current_project_id || payload.currentProjectId || project.id,
+        currentAdId: payload.currentAdId || payload.current_ad_id || project.id,
+        current_ad_id: payload.current_ad_id || payload.currentAdId || project.id,
+        userId: payload.userId || payload.user_id || project.user_id || null,
+        user_id: payload.user_id || payload.userId || project.user_id || null,
+        organizationId: payload.organizationId || payload.organization_id || project.organization_id || null,
+        organization_id: payload.organization_id || payload.organizationId || project.organization_id || null,
+        shareUrl: payload.shareUrl || payload.share_url || project.share_url || "",
+        share_url: payload.share_url || payload.shareUrl || project.share_url || "",
+        resultsUrl: payload.resultsUrl || payload.results_url || project.results_url || "",
+        results_url: payload.results_url || payload.resultsUrl || project.results_url || ""
+      }
+    };
+
+    console.log("[ITS NOTIF DEBUG][TRANSMISSION] Payload enrichi pour notif", {
+      projectId: enriched.projectId,
+      organizationId: enriched.organizationId,
+      userId: enriched.userId,
+      hasShareUrl: Boolean(enriched.shareUrl),
+      hasResultsUrl: Boolean(enriched.resultsUrl)
+    });
+
+    return enriched;
+  } catch (err) {
+    console.error("[ITS NOTIF DEBUG][TRANSMISSION] Erreur enrichissement payload", err);
+    return originalBody;
+  }
+}
+
 async function markProjectAsSentFromTransmission(req, options = {}) {
   const projectId = extractProjectIdFromTransmissionBody(req.body || {});
   if (!projectId) return null;
@@ -5756,7 +5856,7 @@ async function markProjectAsSentFromTransmission(req, options = {}) {
 
 app.post("/api/transmissions/submit", auth, async (req, res) => {
   try {
-    const payloadForEmail = req.body || {};
+    const payloadForEmail = await enrichTransmissionPayloadForNotificationRouting(req);
     const normalizedPayload = payloadForEmail.payload && typeof payloadForEmail.payload === "object" ? payloadForEmail.payload : payloadForEmail;
     const isExtensionTransmission =
       payloadForEmail.isExtending === true ||

@@ -618,13 +618,36 @@ L’équipe Into The Shift`,
 
 export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DEFAULT_ADMIN_EMAIL, createNotification = null }) {
   async function notifyClientOrganization(organizationId, payload = {}) {
-    if (typeof createNotification !== "function" || !organizationId) return null;
-    return createNotification({ audience: "client", organizationId, ...payload });
+    if (typeof createNotification !== "function" || !organizationId) {
+      console.warn("[ITS NOTIF DEBUG][PACK][CLIENT] notification ignorée", { hasCreateNotification: typeof createNotification === "function", organizationId, type: payload.type || "" });
+      return null;
+    }
+    const finalPayload = { audience: "client", organizationId, ...payload, metadata: { ...((payload.metadata && typeof payload.metadata === "object") ? payload.metadata : {}), organizationId } };
+    console.log("[ITS NOTIF DEBUG][PACK][CLIENT] tentative", { type: finalPayload.type, title: finalPayload.title, organizationId, actionUrl: finalPayload.actionUrl });
+    const created = await createNotification(finalPayload);
+    console.log("[ITS NOTIF DEBUG][PACK][CLIENT] résultat", { createdId: created?.id || null, type: finalPayload.type, organizationId });
+    return created;
   }
 
   async function notifyAdmin(payload = {}) {
-    if (typeof createNotification !== "function") return null;
-    return createNotification({ audience: "admin", ...payload });
+    if (typeof createNotification !== "function") {
+      console.warn("[ITS NOTIF DEBUG][PACK][ADMIN] createNotification indisponible", { type: payload.type || "" });
+      return null;
+    }
+    const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
+    const organizationId = payload.organizationId || payload.organization_id || metadata.organizationId || metadata.organization_id || null;
+    const projectId = payload.projectId || payload.project_id || metadata.projectId || metadata.project_id || null;
+    const finalPayload = {
+      audience: "admin",
+      organizationId,
+      projectId,
+      ...payload,
+      metadata: { ...metadata, organizationId, projectId }
+    };
+    console.log("[ITS NOTIF DEBUG][PACK][ADMIN] tentative", { type: finalPayload.type, title: finalPayload.title, organizationId, projectId, actionUrl: finalPayload.actionUrl });
+    const created = await createNotification(finalPayload);
+    console.log("[ITS NOTIF DEBUG][PACK][ADMIN] résultat", { createdId: created?.id || null, type: finalPayload.type, organizationId, projectId });
+    return created;
   }
 
   async function getPackAlertRows() {
