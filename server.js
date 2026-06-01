@@ -4915,19 +4915,33 @@ function extractProjectIdFromTransmissionBody(body = {}) {
   );
 }
 
-async function markProjectAsSentFromTransmission(req) {
+async function markProjectAsSentFromTransmission(req, options = {}) {
   const projectId = extractProjectIdFromTransmissionBody(req.body || {});
   if (!projectId) return null;
 
+  const isExtensionTransmission = options.isExtensionTransmission === true;
+  const isReprogrammingTransmission = options.isReprogrammingTransmission === true;
+  const isCampaignUpdateTransmission = isExtensionTransmission || isReprogrammingTransmission;
+
   const result = await pool.query(
     `UPDATE projects
-     SET status = 'sent',
+     SET status = CASE WHEN $3::boolean THEN status ELSE 'sent' END,
          data = COALESCE(data, '{}'::jsonb) || jsonb_build_object(
            'configTransmise', true,
            'config_transmise', true,
            'submitted', true,
            'submitted_at', NOW(),
-           'status', 'sent'
+           'status', CASE WHEN $3::boolean THEN status ELSE 'sent' END,
+           'extended', COALESCE((data->>'extended')::boolean, false) OR $4::boolean,
+           'isExtended', COALESCE((data->>'isExtended')::boolean, false) OR $4::boolean,
+           'extended_at', CASE WHEN $4::boolean THEN NOW() ELSE data->>'extended_at' END,
+           'reprogrammed', COALESCE((data->>'reprogrammed')::boolean, false) OR $5::boolean,
+           'isReprogrammed', COALESCE((data->>'isReprogrammed')::boolean, false) OR $5::boolean,
+           'campaign_reprogrammed', COALESCE((data->>'campaign_reprogrammed')::boolean, false) OR $5::boolean,
+           'campaignReprogrammed', COALESCE((data->>'campaignReprogrammed')::boolean, false) OR $5::boolean,
+           'reprogrammed_at', CASE WHEN $5::boolean THEN NOW() ELSE data->>'reprogrammed_at' END,
+           'campaign_reprogrammed_at', CASE WHEN $5::boolean THEN NOW() ELSE data->>'campaign_reprogrammed_at' END,
+           'transmissionType', CASE WHEN $5::boolean THEN 'reprogramming' WHEN $4::boolean THEN 'extension' ELSE COALESCE(data->>'transmissionType', 'standard') END
          ),
          current_step = 'validation',
          updated_at = NOW()
@@ -4939,7 +4953,7 @@ async function markProjectAsSentFromTransmission(req) {
          OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
        )
      RETURNING id, status`,
-    [projectId, req.user.id]
+    [projectId, req.user.id, isCampaignUpdateTransmission, isExtensionTransmission, isReprogrammingTransmission]
   );
 
   return result.rows[0] || null;
@@ -5002,7 +5016,10 @@ app.post("/api/transmissions/submit", auth, async (req, res) => {
       recapFilename: ctx.recapFilename
     });
 
-    const projectStatusUpdate = await markProjectAsSentFromTransmission(req);
+    const projectStatusUpdate = await markProjectAsSentFromTransmission(req, {
+      isExtensionTransmission,
+      isReprogrammingTransmission
+    });
 
     return res.json({
       ok: transmissionEmail.clientEmailSent && transmissionEmail.adminEmailSent,
