@@ -1681,9 +1681,12 @@ async function createNotification({ audience = "client", userId = null, organiza
     if (finalOrganizationId && !safeMetadata.organizationId) safeMetadata.organizationId = finalOrganizationId;
     if (finalUserId && !safeMetadata.userId) safeMetadata.userId = finalUserId;
 
-    const finalActionUrl = safeAudience === "admin" && finalOrganizationId
-      ? `/client-folder.html?id=${encodeURIComponent(finalOrganizationId)}`
-      : normalizeNotificationUrl(actionUrl);
+    const finalType = String(type || "info");
+    const finalActionUrl = safeAudience === "admin" && finalType === "brand_assets" && finalProjectId
+      ? `/kit-communication.html?projectId=${encodeURIComponent(finalProjectId)}`
+      : safeAudience === "admin" && finalOrganizationId
+        ? `/client-folder.html?id=${encodeURIComponent(finalOrganizationId)}`
+        : normalizeNotificationUrl(actionUrl);
 
     const result = await pool.query(
       `INSERT INTO notifications (audience, user_id, organization_id, project_id, type, title, message, action_url, metadata)
@@ -1694,7 +1697,7 @@ async function createNotification({ audience = "client", userId = null, organiza
         finalUserId,
         finalOrganizationId,
         finalProjectId,
-        String(type || "info"),
+        finalType,
         String(title || "Notification"),
         String(message || ""),
         finalActionUrl,
@@ -3703,7 +3706,13 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
                       - 'packExpiredAutoUnpublished'
                       - 'pack_expired_auto_unpublished'
                       - 'packExpiredAutoUnpublishedAt'
-                      - 'pack_expired_auto_unpublished_at')
+                      - 'pack_expired_auto_unpublished_at'
+                      - 'packEmptyAutoUnpublished'
+                      - 'pack_empty_auto_unpublished'
+                      - 'packEmptyAutoUnpublishedAt'
+                      - 'pack_empty_auto_unpublished_at'
+                      - 'packAutoUnpublishedReason'
+                      - 'pack_auto_unpublished_reason')
                     || jsonb_build_object(
                       'packExpiredAutoRepublished', true,
                       'pack_expired_auto_republished', true,
@@ -3716,6 +3725,8 @@ app.patch("/api/admin/organizations/:id/passations", auth, requireAdmin, async (
            AND (
              COALESCE((data->>'packExpiredAutoUnpublished')::boolean, false) = true
              OR COALESCE((data->>'pack_expired_auto_unpublished')::boolean, false) = true
+             OR COALESCE((data->>'packEmptyAutoUnpublished')::boolean, false) = true
+             OR COALESCE((data->>'pack_empty_auto_unpublished')::boolean, false) = true
            )
          RETURNING id, title, share_url, results_url, campaign_start_date, campaign_end_date, data`,
         [id]
@@ -4255,6 +4266,26 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
       return res.status(404).json({ error: "Projet introuvable" });
     }
 
+    if (status === "unpublished" && currentStatus !== "unpublished") {
+      await createClientNotificationForProject(id, {
+        type: "unpublished",
+        title: "Campagne dépubliée",
+        message: "Votre campagne a été dépubliée par Into The Shift.",
+        actionUrl: "/mes-autodiagnostics.html",
+        metadata: { source: "admin_status", previousStatus: currentStatus }
+      });
+    }
+
+    if (status === "published" && currentStatus === "unpublished") {
+      await createClientNotificationForProject(id, {
+        type: "links",
+        title: "Campagne republiée",
+        message: "Votre campagne a été republiée. Le lien de diffusion est à nouveau actif.",
+        actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(id)}`,
+        metadata: { source: "admin_status", previousStatus: currentStatus }
+      });
+    }
+
     res.json({
       ok: true,
       project: result.rows[0]
@@ -4379,7 +4410,13 @@ app.patch("/api/admin/organizations/:id/pack-upgrade", auth, requireAdmin, async
                     - 'packExpiredAutoUnpublished'
                     - 'pack_expired_auto_unpublished'
                     - 'packExpiredAutoUnpublishedAt'
-                    - 'pack_expired_auto_unpublished_at')
+                    - 'pack_expired_auto_unpublished_at'
+                    - 'packEmptyAutoUnpublished'
+                    - 'pack_empty_auto_unpublished'
+                    - 'packEmptyAutoUnpublishedAt'
+                    - 'pack_empty_auto_unpublished_at'
+                    - 'packAutoUnpublishedReason'
+                    - 'pack_auto_unpublished_reason')
                   || jsonb_build_object(
                     'packExpiredAutoRepublished', true,
                     'pack_expired_auto_republished', true,
@@ -4392,6 +4429,8 @@ app.patch("/api/admin/organizations/:id/pack-upgrade", auth, requireAdmin, async
          AND (
            COALESCE((data->>'packExpiredAutoUnpublished')::boolean, false) = true
            OR COALESCE((data->>'pack_expired_auto_unpublished')::boolean, false) = true
+           OR COALESCE((data->>'packEmptyAutoUnpublished')::boolean, false) = true
+           OR COALESCE((data->>'pack_empty_auto_unpublished')::boolean, false) = true
          )
        RETURNING id, title, share_url, results_url, campaign_start_date, campaign_end_date, data`,
       [id]
@@ -4581,7 +4620,13 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
                     - 'packExpiredAutoUnpublished'
                     - 'pack_expired_auto_unpublished'
                     - 'packExpiredAutoUnpublishedAt'
-                    - 'pack_expired_auto_unpublished_at')
+                    - 'pack_expired_auto_unpublished_at'
+                    - 'packEmptyAutoUnpublished'
+                    - 'pack_empty_auto_unpublished'
+                    - 'packEmptyAutoUnpublishedAt'
+                    - 'pack_empty_auto_unpublished_at'
+                    - 'packAutoUnpublishedReason'
+                    - 'pack_auto_unpublished_reason')
                   || jsonb_build_object(
                     'packExpiredAutoRepublished', true,
                     'pack_expired_auto_republished', true,
@@ -4594,6 +4639,8 @@ app.patch("/api/admin/projects/:id/pack-upgrade", auth, requireAdmin, async (req
          AND (
            COALESCE((data->>'packExpiredAutoUnpublished')::boolean, false) = true
            OR COALESCE((data->>'pack_expired_auto_unpublished')::boolean, false) = true
+           OR COALESCE((data->>'packEmptyAutoUnpublished')::boolean, false) = true
+           OR COALESCE((data->>'pack_empty_auto_unpublished')::boolean, false) = true
          )
        RETURNING id, title, share_url, results_url, campaign_start_date, campaign_end_date, data`,
       [project.organization_id]
@@ -4812,7 +4859,28 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
       publicationEmail = await sendProjectPublicationEmail(id);
     }
 
-    res.json({ ok: true, project: result.rows[0], publicationEmail });
+    let statusNotification = { sent: false, reason: "NOT_TRIGGERED" };
+    if (finalStatus === "unpublished" && currentStatus !== "unpublished") {
+      statusNotification = await createClientNotificationForProject(id, {
+        type: "unpublished",
+        title: "Campagne dépubliée",
+        message: "Votre campagne a été dépubliée par Into The Shift.",
+        actionUrl: "/mes-autodiagnostics.html",
+        metadata: { source: "admin_publication", previousStatus: currentStatus }
+      }) || { sent: false, reason: "NOT_CREATED" };
+    }
+
+    if (finalStatus === "published" && currentStatus === "unpublished" && existing.publication_email_sent_at) {
+      statusNotification = await createClientNotificationForProject(id, {
+        type: "links",
+        title: "Campagne republiée",
+        message: "Votre campagne a été republiée. Le lien de diffusion est à nouveau actif.",
+        actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(id)}`,
+        metadata: { source: "admin_publication", previousStatus: currentStatus, shareUrl: nextShareUrl || "", resultsUrl: nextResultsUrl || "" }
+      }) || { sent: false, reason: "NOT_CREATED" };
+    }
+
+    res.json({ ok: true, project: result.rows[0], publicationEmail, statusNotification });
   } catch (err) {
     console.error("Erreur publication projet", err);
     res.status(500).json({ error: "Erreur publication projet" });
@@ -4915,8 +4983,8 @@ app.post("/api/projects/:id/communication-assets", auth, async (req, res) => {
       type: "brand_assets",
       title: "Logo / charte déposés par le client",
       message: `Le client « ${project.organization_name || project.contact_name || "client"} » a déposé un élément de marque sur le kit de communication.`,
-      actionUrl: project.organization_id ? `/client-folder.html?id=${encodeURIComponent(project.organization_id)}` : "/admin.html#organizations",
-      metadata: { source: "kit_communication", fileName }
+      actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(project.id || id)}`,
+      metadata: { source: "kit_communication", fileName, projectId: project.id || id, organizationId: project.organization_id || null }
     });
 
     res.json({ ok: true, asset: formatCommunicationAsset(result.rows[0]) });

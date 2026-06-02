@@ -724,12 +724,44 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
     `, [organizationId]);
   }
 
+  async function autoUnpublishProjectsForEmptyPack(organizationId) {
+    const result = await pool.query(
+      `UPDATE projects
+       SET status = 'unpublished',
+           unpublished_at = NOW(),
+           unpublished_alert_sent_at = COALESCE(unpublished_alert_sent_at, NOW()),
+           data = COALESCE(data, '{}'::jsonb) || jsonb_build_object(
+             'packEmptyAutoUnpublished', true,
+             'pack_empty_auto_unpublished', true,
+             'packEmptyAutoUnpublishedAt', NOW(),
+             'pack_empty_auto_unpublished_at', NOW(),
+             'packAutoUnpublishedReason', 'empty',
+             'pack_auto_unpublished_reason', 'empty'
+           ),
+           updated_at = NOW()
+       WHERE organization_id = $1
+         AND status = 'published'
+       RETURNING id, title, share_url, results_url, campaign_start_date, campaign_end_date, data`,
+      [organizationId]
+    );
+
+    return {
+      count: result.rowCount || 0,
+      projects: result.rows || []
+    };
+  }
+
   async function sendPackAlertForRow(row, { mode = "all" } = {}) {
     const safeMode = String(mode || "all").toLowerCase();
     const status = getPackStatus(row);
 
     if (status.type === "ok") {
       return { sent: false, skipped: true, id: row.id, type: status.type, reason: "PACK_OK", remaining: status.remaining, quota: status.quota };
+    }
+
+    let emptyAutoUnpublish = { count: 0, projects: [] };
+    if (status.type === "empty") {
+      emptyAutoUnpublish = await autoUnpublishProjectsForEmptyPack(row.id);
     }
 
     if (safeMode !== "all" && safeMode !== status.type) {
@@ -781,18 +813,22 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
       await notifyClientOrganization(row.id, {
         type: status.type === "empty" ? "pack_empty" : status.type === "critical" ? "pack_critical" : "pack_low",
         title: status.type === "empty" ? "Pack épuisé" : status.type === "critical" ? "Pack critique" : "Pack bientôt épuisé",
-        message: `Il reste ${status.remaining.toLocaleString("fr-FR")} passation${status.remaining > 1 ? "s" : ""} sur ${status.quota.toLocaleString("fr-FR")} pour ${row.name || "votre organisation"}.`,
+        message: status.type === "empty"
+          ? `Le pack de ${row.name || "votre organisation"} est épuisé. ${emptyAutoUnpublish.count > 0 ? `${emptyAutoUnpublish.count} campagne${emptyAutoUnpublish.count > 1 ? "s ont été dépubliées" : " a été dépubliée"}.` : "Aucune campagne publiée n’était à dépublier."}`
+          : `Il reste ${status.remaining.toLocaleString("fr-FR")} passation${status.remaining > 1 ? "s" : ""} sur ${status.quota.toLocaleString("fr-FR")} pour ${row.name || "votre organisation"}.`,
         actionUrl: "/account.html?tab=quota",
-        metadata: { email: "pack_alert", remaining: status.remaining, quota: status.quota, used: status.used }
+        metadata: { email: "pack_alert", remaining: status.remaining, quota: status.quota, used: status.used, autoUnpublishedCount: emptyAutoUnpublish.count }
       });
     }
     if (internalMailResult.sent) {
       await notifyAdmin({
         type: status.type === "empty" ? "pack_empty" : status.type === "critical" ? "pack_critical" : "pack_low",
         title: `${status.label} — ${row.name || "Client"}`,
-        message: `Passations restantes : ${status.remaining.toLocaleString("fr-FR")} / ${status.quota.toLocaleString("fr-FR")}.`,
+        message: status.type === "empty"
+          ? `Passations restantes : 0 / ${status.quota.toLocaleString("fr-FR")}. ${emptyAutoUnpublish.count > 0 ? `${emptyAutoUnpublish.count} campagne${emptyAutoUnpublish.count > 1 ? "s ont été dépubliées" : " a été dépubliée"}.` : "Aucune campagne publiée n’était à dépublier."}`
+          : `Passations restantes : ${status.remaining.toLocaleString("fr-FR")} / ${status.quota.toLocaleString("fr-FR")}.`,
         actionUrl: `/client-folder.html?id=${encodeURIComponent(row.id)}`,
-        metadata: { email: "pack_alert_internal", organizationId: row.id }
+        metadata: { email: "pack_alert_internal", organizationId: row.id, autoUnpublishedCount: emptyAutoUnpublish.count }
       });
     }
 
@@ -806,7 +842,8 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
       clientCc: recipient.clientCc || "",
       clientEmailSent: clientMailResult.sent === true,
       remaining: status.remaining,
-      quota: status.quota
+      quota: status.quota,
+      autoUnpublishedCount: emptyAutoUnpublish.count
     };
   }
 
@@ -839,6 +876,19 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
       );
       unpublishedCount = result.rowCount || 0;
       unpublishedProjects = result.rows || [];
+
+      if (unpublishedCount === 0) {
+        await pool.query(
+          `UPDATE organizations
+           SET ${getPackExpiryColumn(type)} = NOW(),
+               passations_quota = 0,
+               passations_used = 0,
+               passations_pack = COALESCE(NULLIF(passations_pack, ''), 'expired')
+           WHERE id = $1`,
+          [row.id]
+        );
+        return { sent: false, skipped: true, id: row.id, type, reason: "NO_PUBLISHED_PROJECTS_TO_UNPUBLISH", unpublishedCount: 0 };
+      }
     }
 
     const recipient = getPackAlertRecipients(row, adminEmail);
@@ -945,8 +995,13 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
 
     for (const row of result.rows) {
       const expiryResult = await sendPackExpiryAlertForRow(row, { mode });
-      if (expiryResult.sent) sent.push(expiryResult);
-      else if (expiryResult.skipped && expiryResult.reason !== "NO_EXPIRY_MATCH") skipped.push(expiryResult);
+      if (expiryResult.sent) {
+        sent.push(expiryResult);
+        continue;
+      } else if (expiryResult.skipped && expiryResult.reason !== "NO_EXPIRY_MATCH") {
+        skipped.push(expiryResult);
+        if (expiryResult.type === "expired") continue;
+      }
 
       const alertResult = await sendPackAlertForRow(row, { mode });
       if (alertResult.sent) {
