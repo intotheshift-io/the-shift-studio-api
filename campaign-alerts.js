@@ -151,6 +151,28 @@ function buildCampaignAlertEmail({ type, row, daysBefore, recipientName }) {
   };
 }
 
+function buildAdminCampaignAlertEmail({ type, row, daysBefore }) {
+  const title = row.title || "autodiagnostic sans titre";
+  const endDate = formatDateLongFr(row.campaign_end_date);
+  const company = row.organization_name || row.user_company_name || row.contact_name || "Client";
+
+  if (type === "unpublished") {
+    return {
+      to: "contact@intotheshift.io",
+      subject: `Campagne terminée — ${company} — ${title}`,
+      text: `Alerte interne Into The Shift.\n\nLa campagne de l’autodiagnostic "${title}" (${company}) est arrivée à échéance et a été dépubliée automatiquement.\n\nDate de clôture : ${endDate}\n\nAucune action n’est requise sauf demande du client.`,
+      html: `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px"><div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px"><p><strong>Alerte interne Into The Shift.</strong></p><p>La campagne de l’autodiagnostic <strong>${escapeHtml(title)}</strong> (${escapeHtml(company)}) est arrivée à échéance et a été dépubliée automatiquement.</p><p><strong>Date de clôture :</strong> ${escapeHtml(endDate)}</p><p>Aucune action n’est requise sauf demande du client.</p></div></div>`
+    };
+  }
+
+  return {
+    to: "contact@intotheshift.io",
+    subject: `Campagne bientôt terminée · J-${daysBefore} — ${company} — ${title}`,
+    text: `Alerte interne Into The Shift.\n\nLa campagne de l’autodiagnostic "${title}" (${company}) se termine dans ${daysBefore} jour${Number(daysBefore) > 1 ? "s" : ""}.\n\nDate de clôture : ${endDate}\n\nLe client a été invité à relancer la diffusion.`,
+    html: `<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px"><div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px"><p><strong>Alerte interne Into The Shift.</strong></p><p>La campagne de l’autodiagnostic <strong>${escapeHtml(title)}</strong> (${escapeHtml(company)}) se termine dans <strong>${escapeHtml(String(daysBefore))} jour${Number(daysBefore) > 1 ? "s" : ""}</strong>.</p><p><strong>Date de clôture :</strong> ${escapeHtml(endDate)}</p><p>Le client a été invité à relancer la diffusion.</p></div></div>`
+  };
+}
+
 
 function buildTransmissionEmailContext(body = {}) {
   const payload = body.payload && typeof body.payload === "object" ? body.payload : body;
@@ -643,6 +665,31 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
             : `La campagne « ${row.title || "votre autodiagnostic"} » se termine dans ${daysBefore} jour${Number(daysBefore) > 1 ? "s" : ""}.`,
           actionUrl: type === "unpublished" ? `/mes-autodiagnostics.html` : `/kit-communication.html?projectId=${encodeURIComponent(row.id)}`,
           metadata: { email: type === "unpublished" ? "campaign_unpublished" : "campaign_ending", daysBefore: type === "unpublished" ? null : daysBefore }
+        });
+      }
+
+      // Alerte interne : un email admin + une notif admin par campagne et par palier,
+      // gouvernés par le même verrou anti-doublon que l'email client ci-dessus.
+      const adminMail = buildAdminCampaignAlertEmail({ type, row, daysBefore });
+      try {
+        await sendTransactionalEmail({ to: adminMail.to, subject: adminMail.subject, text: adminMail.text, html: adminMail.html });
+      } catch (err) {
+        console.error("Erreur envoi email admin alerte campagne", err);
+      }
+
+      if (typeof createNotification === "function") {
+        await createNotification({
+          audience: "admin",
+          userId: null,
+          organizationId: row.organization_id || null,
+          projectId: row.id,
+          type: type === "unpublished" ? "unpublished" : "ending",
+          title: type === "unpublished" ? "Campagne terminée" : `Campagne bientôt terminée · J-${daysBefore}`,
+          message: type === "unpublished"
+            ? `La campagne « ${row.title || "autodiagnostic"} » (${row.organization_name || row.user_company_name || "client"}) est arrivée à échéance.`
+            : `La campagne « ${row.title || "autodiagnostic"} » (${row.organization_name || row.user_company_name || "client"}) se termine dans ${daysBefore} jour${Number(daysBefore) > 1 ? "s" : ""}.`,
+          actionUrl: row.organization_id ? `/client-folder.html?id=${encodeURIComponent(row.organization_id)}` : "/admin.html#organizations",
+          metadata: { email: type === "unpublished" ? "campaign_unpublished_admin" : "campaign_ending_admin", daysBefore: type === "unpublished" ? null : daysBefore }
         });
       }
 

@@ -4876,6 +4876,56 @@ app.post("/api/admin/projects/:id/communication-assets", auth, requireAdmin, asy
   }
 });
 
+// Dépôt CLIENT (logo / charte graphique) sur le kit de communication.
+// Distinct de la route admin : accès via getProjectForCommunicationAccess (autorise
+// le client rattaché au projet), et le nom de fichier est préfixé "charte-logo-client__"
+// pour être reconnu comme élément de marque côté kit (isBrandAsset).
+app.post("/api/projects/:id/communication-assets", auth, async (req, res) => {
+  const { id } = req.params;
+  const rawName = String(req.body?.fileName || req.body?.file_name || "").trim();
+  const mimeType = String(req.body?.mimeType || req.body?.mime_type || "").trim();
+  const dataUrl = String(req.body?.dataUrl || req.body?.data_url || "").trim();
+  const sizeBytes = Number(req.body?.sizeBytes || req.body?.size_bytes || 0);
+  const fileName = rawName.startsWith("charte-logo-client__") ? rawName : `charte-logo-client__${rawName}`;
+
+  if (!isValidCommunicationAsset({ fileName, mimeType, dataUrl, sizeBytes })) {
+    return res.status(400).json({ error: "Fichier invalide. Formats acceptés : PDF, PNG, JPG, 4 Mo maximum." });
+  }
+
+  try {
+    const project = await getProjectForCommunicationAccess(id, req.user);
+    if (!project) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO project_communication_assets (project_id, file_name, mime_type, size_bytes, data_url, uploaded_by)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [id, fileName, mimeType, sizeBytes, dataUrl, req.user.id]
+    );
+
+    await pool.query(`UPDATE projects SET updated_at = NOW() WHERE id = $1`, [id]);
+
+    // Alerte admin : le client a déposé un élément de marque à récupérer.
+    await createNotification({
+      audience: "admin",
+      organizationId: project.organization_id || null,
+      projectId: project.id || id,
+      type: "brand_assets",
+      title: "Logo / charte déposés par le client",
+      message: `Le client « ${project.organization_name || project.contact_name || "client"} » a déposé un élément de marque sur le kit de communication.`,
+      actionUrl: project.organization_id ? `/client-folder.html?id=${encodeURIComponent(project.organization_id)}` : "/admin.html#organizations",
+      metadata: { source: "kit_communication", fileName }
+    });
+
+    res.json({ ok: true, asset: formatCommunicationAsset(result.rows[0]) });
+  } catch (err) {
+    console.error("POST /api/projects/:id/communication-assets", err);
+    res.status(500).json({ error: "Erreur ajout ressource de communication." });
+  }
+});
+
 app.delete("/api/admin/communication-assets/:assetId", auth, requireAdmin, async (req, res) => {
   const { assetId } = req.params;
 
