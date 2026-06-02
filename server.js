@@ -2229,7 +2229,7 @@ app.get("/api/notifications", auth, async (req, res) => {
          COALESCE(n.organization_id, p.organization_id) AS organization_id
        FROM notifications n
        LEFT JOIN projects p ON p.id = n.project_id
-       WHERE COALESCE(n.user_id, p.user_id) = $1
+       WHERE (n.audience IN ('client','partner') AND COALESCE(n.user_id, p.user_id) = $1)
           ${orgClause}
           ${adminClause}
        ORDER BY n.created_at DESC
@@ -2265,7 +2265,7 @@ app.patch("/api/notifications/:id/read", auth, async (req, res) => {
          FROM notifications n
          LEFT JOIN projects p ON p.id = n.project_id
          WHERE n.id = $1
-           AND (COALESCE(n.user_id, p.user_id) = $2 ${orgClause} ${adminClause})
+           AND ((n.audience IN ('client','partner') AND COALESCE(n.user_id, p.user_id) = $2) ${orgClause} ${adminClause})
        )
        UPDATE notifications n
        SET read_at = COALESCE(n.read_at, NOW())
@@ -2303,7 +2303,7 @@ app.patch("/api/notifications/read-all", auth, async (req, res) => {
          FROM notifications n
          LEFT JOIN projects p ON p.id = n.project_id
          WHERE n.read_at IS NULL
-           AND (COALESCE(n.user_id, p.user_id) = $1 ${orgClause} ${adminClause})
+           AND ((n.audience IN ('client','partner') AND COALESCE(n.user_id, p.user_id) = $1) ${orgClause} ${adminClause})
        )
        UPDATE notifications n
        SET read_at = COALESCE(n.read_at, NOW())
