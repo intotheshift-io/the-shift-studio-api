@@ -742,6 +742,16 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
       });
     }
 
+    if (adminMail.sent) {
+      await notifyAdminFromBody(body, {
+        type: "extended",
+        title: "Prolongation de campagne",
+        message: `La campagne « ${ctx.autodiagTitle || "autodiagnostic sans titre"} » a été prolongée par le client.`,
+        actionUrl: "/admin.html#organizations",
+        metadata: { email: "campaign_extended_admin", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "", clientEmail: ctx.clientEmail || "", companyName: ctx.companyName || "" }
+      });
+    }
+
     return {
       ok: clientMail.sent && adminMail.sent,
       ctx,
@@ -800,6 +810,16 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
         message: `La campagne « ${ctx.autodiagTitle || "votre autodiagnostic"} » a été reprogrammée.`,
         actionUrl: "/mes-autodiagnostics.html",
         metadata: { email: "campaign_reprogrammed", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "" }
+      });
+    }
+
+    if (adminMail.sent) {
+      await notifyAdminFromBody(body, {
+        type: "reprogrammed",
+        title: "Reprogrammation de campagne",
+        message: `La campagne « ${ctx.autodiagTitle || "autodiagnostic sans titre"} » a été reprogrammée par le client.`,
+        actionUrl: "/admin.html#organizations",
+        metadata: { email: "campaign_reprogrammed_admin", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "", clientEmail: ctx.clientEmail || "", companyName: ctx.companyName || "" }
       });
     }
 

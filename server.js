@@ -564,6 +564,21 @@ async function initDb() {
     ON notifications(organization_id, read_at, created_at DESC);
   `);
 
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_projects_updated_at
+    ON projects(updated_at DESC);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_projects_status_end_date
+    ON projects(status, campaign_end_date);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_projects_organization_id
+    ON projects(organization_id);
+  `);
+
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS project_communication_assets (
@@ -1016,7 +1031,6 @@ async function notifyPackUpgradeRequestIfNeeded(projectId) {
   try {
     const result = await sendPackUpgradeRequestEmail(projectId);
     if (result?.sent) {
-      console.log("Demande de devis pack envoyée", { projectId, internalTo: result.internalTo || result.to || "", clientTo: result.clientTo || "", clientCc: result.clientCc || "" });
     }
     return result;
   } catch (err) {
@@ -2124,8 +2138,6 @@ L’équipe Into The Shift`,
 </div>`
       });
     }
-
-    await pool.query(`UPDATE organizations SET pack_upgrade_email_sent_at = NOW() WHERE id = $1`, [organizationId]);
 
     res.json({
       ok: true,
@@ -3999,7 +4011,6 @@ app.patch("/api/admin/users/:id/organization", auth, requireAdmin, async (req, r
 });
 
 app.get("/api/admin/projects", auth, requireAdmin, async (req, res) => {
-  await autoUnpublishExpiredProjects();
   const result = await pool.query(`
     SELECT
       p.id,
@@ -5229,12 +5240,6 @@ L’équipe Into The Shift`,
 </div>`
   });
 
-  console.log("ADMIN TEST EMAIL STATUS", {
-    email,
-    emailSent: mailResult.sent,
-    emailStatus: mailResult.reason || "SENT"
-  });
-
   res.json({
     ok: mailResult.sent,
     emailSent: mailResult.sent,
@@ -5340,12 +5345,6 @@ L’équipe Into The Shift`,
   <p>Après connexion avec ce mot de passe temporaire, vous serez invité à choisir votre propre mot de passe.</p>
   <p>L’équipe Into The Shift</p>
 </div>`
-    });
-
-    console.log("ADMIN USER CREATED EMAIL STATUS", {
-      email: user.email,
-      emailSent: mailResult.sent,
-      emailStatus: mailResult.reason || "SENT"
     });
 
     res.json({
@@ -5788,12 +5787,6 @@ L’équipe Into The Shift`;
       subject,
       text,
       html
-    });
-
-    console.log("CLIENT RECAP EMAIL STATUS", {
-      to: recipients,
-      emailSent: mailResult.sent,
-      emailStatus: mailResult.reason || "SENT"
     });
 
     return res.json({
