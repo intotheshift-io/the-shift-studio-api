@@ -1591,6 +1591,58 @@ function isReprogrammedProjectData(data = {}) {
   );
 }
 
+function isExtendedProjectData(data = {}) {
+  const d = data && typeof data === "object" ? data : {};
+  return (
+    d.extended === true ||
+    d.isExtended === true ||
+    d.campaign_extended === true ||
+    d.campaignExtended === true ||
+    String(d.transmissionType || "").toLowerCase() === "extension"
+  );
+}
+
+function extensionValidationAlreadyNotified(data = {}) {
+  const d = data && typeof data === "object" ? data : {};
+  return Boolean(
+    d.extensionValidatedNotifiedAt ||
+    d.extension_validated_notified_at ||
+    d.campaignExtensionValidatedAt ||
+    d.campaign_extension_validated_at
+  );
+}
+
+async function notifyClientExtensionValidatedIfNeeded(projectId, data = {}, source = "admin_publication") {
+  if (!projectId || !isExtendedProjectData(data) || extensionValidationAlreadyNotified(data)) {
+    return { sent: false, reason: "NOT_TRIGGERED" };
+  }
+
+  const notification = await createClientNotificationForProject(projectId, {
+    type: "extended_validated",
+    title: "Prolongation validée",
+    message: "Votre demande de prolongation a été validée. La campagne prolongée est publiée.",
+    actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(projectId)}`,
+    metadata: { source, email: "campaign_extension_validated" }
+  });
+
+  if (!notification) return { sent: false, reason: "NOT_CREATED" };
+
+  await pool.query(
+    `UPDATE projects
+     SET data = COALESCE(data, '{}'::jsonb) || jsonb_build_object(
+           'extensionValidatedNotifiedAt', NOW(),
+           'extension_validated_notified_at', NOW(),
+           'campaignExtensionValidatedAt', NOW(),
+           'campaign_extension_validated_at', NOW()
+         ),
+         updated_at = NOW()
+     WHERE id = $1`,
+    [projectId]
+  );
+
+  return { sent: true, notificationId: notification.id || null };
+}
+
 async function getUserNotificationOrganizationIds(userId) {
   const result = await pool.query(
     `SELECT organization_id FROM organization_users WHERE user_id = $1
@@ -4144,9 +4196,15 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
       publicationEmail = await sendProjectPublicationEmail(id, { reprogramming: isReprogrammingRepublication });
     }
 
+    let extensionValidationNotification = { sent: false, reason: "NOT_TRIGGERED" };
+    if (status === "published") {
+      extensionValidationNotification = await notifyClientExtensionValidatedIfNeeded(id, currentRow.data || {}, "admin_status");
+    }
+
     res.json({
       ok: true,
-      project: result.rows[0]
+      project: result.rows[0],
+      extensionValidationNotification
     });
   } catch (err) {
     console.error("Erreur mise à jour statut projet admin", err);
@@ -4736,7 +4794,15 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
         : { sent: false, reason: publicationEmail.reason || "EMAIL_NOT_SENT" };
     }
 
-    res.json({ ok: true, project: result.rows[0], publicationEmail, statusNotification });
+    let extensionValidationNotification = { sent: false, reason: "NOT_TRIGGERED" };
+    if (finalStatus === "published") {
+      extensionValidationNotification = await notifyClientExtensionValidatedIfNeeded(id, existing.data || {}, "admin_publication");
+      if (extensionValidationNotification.sent) {
+        statusNotification = extensionValidationNotification;
+      }
+    }
+
+    res.json({ ok: true, project: result.rows[0], publicationEmail, statusNotification, extensionValidationNotification });
   } catch (err) {
     console.error("Erreur publication projet", err);
     res.status(500).json({ error: "Erreur publication projet" });

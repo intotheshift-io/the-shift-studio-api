@@ -1067,20 +1067,20 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
     if (clientMail.sent) {
       await notifyClientFromBody(body, {
         type: "extended",
-        title: "Campagne prolongée",
-        message: `La campagne « ${ctx.autodiagTitle || "votre autodiagnostic"} » a été prolongée.`,
+        title: "Prolongation transmise",
+        message: `Votre demande de prolongation de la campagne « ${ctx.autodiagTitle || "votre autodiagnostic"} » a bien été transmise.`,
         actionUrl: "/mes-autodiagnostics.html",
-        metadata: { email: "campaign_extended", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "" }
+        metadata: { email: "campaign_extension_requested", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "" }
       });
     }
 
     if (adminMail.sent) {
       await notifyAdminFromBody(body, {
         type: "extended",
-        title: "Prolongation de campagne",
-        message: `La campagne « ${ctx.autodiagTitle || "autodiagnostic sans titre"} » a été prolongée par le client.`,
+        title: "Prolongation demandée",
+        message: `La prolongation de la campagne « ${ctx.autodiagTitle || "autodiagnostic sans titre"} » a été demandée par le client.`,
         actionUrl: "/admin.html#organizations",
-        metadata: { email: "campaign_extended_admin", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "", clientEmail: ctx.clientEmail || "", companyName: ctx.companyName || "" }
+        metadata: { email: "campaign_extension_requested_admin", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "", clientEmail: ctx.clientEmail || "", companyName: ctx.companyName || "" }
       });
     }
 
