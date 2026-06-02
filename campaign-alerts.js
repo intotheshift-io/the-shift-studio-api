@@ -303,16 +303,16 @@ function buildClientReprogrammingEmail(ctx) {
   const newEndDate = formatDateLongFr(ctx.newEndDate || ctx.campaignEndDate || ctx.endDate || "");
 
   return {
-    subject: `Votre campagne a été reprogrammée — ${ctx.autodiagTitle}`,
+    subject: `Votre demande de reprogrammation a bien été transmise — ${ctx.autodiagTitle}`,
     text:
 `Bonjour ${helloName},
 
-La campagne "${ctx.autodiagTitle}" a bien été reprogrammée.
+Votre demande de reprogrammation de la campagne "${ctx.autodiagTitle}" a bien été transmise à Into The Shift.
 
 Ancienne date de clôture : ${oldEndDate}
-Nouvelle date de clôture : ${newEndDate}
+Nouvelle date de clôture demandée : ${newEndDate}
 
-Cette reprogrammation remplace la précédente configuration de diffusion.
+Notre équipe va republier la campagne avec les nouvelles dates. Vous recevrez une notification dès que le lien de diffusion sera à nouveau actif.
 
 Accéder à Mes Autodiagnostics :
 https://shiftstudio.intotheshift.io/mes-autodiagnostics.html
@@ -321,12 +321,12 @@ L’équipe Into The Shift`,
     html: `
       <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
         <p>Bonjour ${escapeHtml(helloName)},</p>
-        <p>La campagne <strong>${escapeHtml(ctx.autodiagTitle)}</strong> a bien été reprogrammée.</p>
+        <p>Votre demande de reprogrammation de la campagne <strong>${escapeHtml(ctx.autodiagTitle)}</strong> a bien été transmise à <strong>Into The Shift</strong>.</p>
         <p>
           <strong>Ancienne date de clôture :</strong> ${escapeHtml(oldEndDate)}<br>
-          <strong>Nouvelle date de clôture :</strong> ${escapeHtml(newEndDate)}
+          <strong>Nouvelle date de clôture demandée :</strong> ${escapeHtml(newEndDate)}
         </p>
-        <p>Cette reprogrammation remplace la précédente configuration de diffusion.</p>
+        <p>Notre équipe va republier la campagne avec les nouvelles dates. Vous recevrez une notification dès que le lien de diffusion sera à nouveau actif.</p>
         <p style="margin:22px 0 10px">
           <a href="https://shiftstudio.intotheshift.io/mes-autodiagnostics.html"
              style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">
@@ -853,10 +853,10 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
     if (clientMail.sent) {
       await notifyClientFromBody(body, {
         type: "reprogrammed",
-        title: "Campagne reprogrammée",
-        message: `La campagne « ${ctx.autodiagTitle || "votre autodiagnostic"} » a été reprogrammée.`,
+        title: "Reprogrammation demandée",
+        message: `Votre demande de reprogrammation de la campagne « ${ctx.autodiagTitle || "votre autodiagnostic"} » a bien été transmise.`,
         actionUrl: "/mes-autodiagnostics.html",
-        metadata: { email: "campaign_reprogrammed", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "" }
+        metadata: { email: "campaign_reprogramming_requested", oldEndDate: ctx.oldEndDate || "", newEndDate: ctx.newEndDate || "" }
       });
     }
 

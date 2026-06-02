@@ -785,7 +785,7 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
       html: internalMail.html
     });
 
-    if (!internalMailResult.sent) {
+    if (!internalMailResult.sent && status.type !== "empty") {
       return { sent: false, skipped: true, id: row.id, type: status.type, to: recipient.internalTo, reason: internalMailResult.reason || "SEND_FAILED", remaining: status.remaining, quota: status.quota };
     }
 
@@ -809,7 +809,7 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
 
     await pool.query(`UPDATE organizations SET ${column} = NOW() WHERE id = $1`, [row.id]);
 
-    if (clientMailResult.sent) {
+    if (clientMailResult.sent || status.type === "empty") {
       await notifyClientOrganization(row.id, {
         type: status.type === "empty" ? "pack_empty" : status.type === "critical" ? "pack_critical" : "pack_low",
         title: status.type === "empty" ? "Pack épuisé" : status.type === "critical" ? "Pack critique" : "Pack bientôt épuisé",
@@ -820,7 +820,7 @@ export function createPackAlerts({ pool, sendTransactionalEmail, adminEmail = DE
         metadata: { email: "pack_alert", remaining: status.remaining, quota: status.quota, used: status.used, autoUnpublishedCount: emptyAutoUnpublish.count }
       });
     }
-    if (internalMailResult.sent) {
+    if (internalMailResult.sent || status.type === "empty") {
       await notifyAdmin({
         type: status.type === "empty" ? "pack_empty" : status.type === "critical" ? "pack_critical" : "pack_low",
         title: `${status.label} — ${row.name || "Client"}`,

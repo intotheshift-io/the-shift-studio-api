@@ -1730,6 +1730,17 @@ async function createClientNotificationForOrganization(organizationId, payload =
   return createNotification({ audience: "client", organizationId, ...payload });
 }
 
+function isReprogrammedProjectData(data = {}) {
+  const d = data && typeof data === "object" ? data : {};
+  return (
+    d.reprogrammed === true ||
+    d.isReprogrammed === true ||
+    d.campaign_reprogrammed === true ||
+    d.campaignReprogrammed === true ||
+    String(d.transmissionType || "").toLowerCase() === "reprogramming"
+  );
+}
+
 async function getUserNotificationOrganizationIds(userId) {
   const result = await pool.query(
     `SELECT organization_id FROM organization_users WHERE user_id = $1
@@ -4241,11 +4252,13 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
   }
 
   try {
-    const currentResult = await pool.query(`SELECT status FROM projects WHERE id = $1 LIMIT 1`, [id]);
+    const currentResult = await pool.query(`SELECT status, data, publication_email_sent_at FROM projects WHERE id = $1 LIMIT 1`, [id]);
     if (!currentResult.rows[0]) {
       return res.status(404).json({ error: "Projet introuvable" });
     }
-    const currentStatus = normalizeProjectStatusValue(currentResult.rows[0].status);
+    const currentRow = currentResult.rows[0];
+    const currentStatus = normalizeProjectStatusValue(currentRow.status);
+    const isReprogrammingRepublication = isReprogrammedProjectData(currentRow.data || {}) && Boolean(currentRow.publication_email_sent_at);
     if (status === "archived" && currentStatus !== "unpublished") {
       return res.status(400).json({ error: "Un projet doit d’abord être dépublié avant d’être archivé." });
     }
@@ -4276,13 +4289,13 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
       });
     }
 
-    if (status === "published" && currentStatus === "unpublished") {
+    if (status === "published" && currentStatus !== "published" && (currentStatus === "unpublished" || isReprogrammingRepublication)) {
       await createClientNotificationForProject(id, {
         type: "links",
         title: "Campagne republiée",
         message: "Votre campagne a été republiée. Le lien de diffusion est à nouveau actif.",
         actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(id)}`,
-        metadata: { source: "admin_status", previousStatus: currentStatus }
+        metadata: { source: "admin_status", previousStatus: currentStatus, reprogrammed: isReprogrammingRepublication }
       });
     }
 
@@ -4870,13 +4883,14 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
       }) || { sent: false, reason: "NOT_CREATED" };
     }
 
-    if (finalStatus === "published" && currentStatus === "unpublished" && existing.publication_email_sent_at) {
+    const isReprogrammingRepublication = isReprogrammedProjectData(existing.data || {}) && Boolean(existing.publication_email_sent_at);
+    if (finalStatus === "published" && currentStatus !== "published" && existing.publication_email_sent_at && (currentStatus === "unpublished" || isReprogrammingRepublication)) {
       statusNotification = await createClientNotificationForProject(id, {
         type: "links",
         title: "Campagne republiée",
         message: "Votre campagne a été republiée. Le lien de diffusion est à nouveau actif.",
         actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(id)}`,
-        metadata: { source: "admin_publication", previousStatus: currentStatus, shareUrl: nextShareUrl || "", resultsUrl: nextResultsUrl || "" }
+        metadata: { source: "admin_publication", previousStatus: currentStatus, reprogrammed: isReprogrammingRepublication, shareUrl: nextShareUrl || "", resultsUrl: nextResultsUrl || "" }
       }) || { sent: false, reason: "NOT_CREATED" };
     }
 
