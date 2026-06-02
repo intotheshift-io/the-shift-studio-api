@@ -151,6 +151,214 @@ function buildCampaignAlertEmail({ type, row, daysBefore, recipientName }) {
   };
 }
 
+
+function cleanProjectDisplayTitle(value = "") {
+  const cleaned = String(value || "")
+    .replace(/^\s*Autodiagnostic\s*[-–—:]?\s*/i, "")
+    .replace(/^\s*Autodiag\s*[-–—:]?\s*/i, "")
+    .trim();
+
+  if (!cleaned || /^(mon projet|nouveau projet|mon premier customizer)$/i.test(cleaned)) return "";
+  return cleaned;
+}
+
+function pickProjectDisplayTitle(...values) {
+  for (const value of values) {
+    const cleaned = cleanProjectDisplayTitle(value);
+    if (cleaned) return cleaned;
+  }
+  return "votre autodiagnostic";
+}
+
+function extractProjectDisplayTitle(data = {}, fallbackTitle = "") {
+  const d = data && typeof data === "object" ? data : {};
+  const payload = d.payload && typeof d.payload === "object" ? d.payload : {};
+  const state = d.state && typeof d.state === "object" ? d.state : {};
+  const param = getProjectParamData(d);
+
+  return pickProjectDisplayTitle(
+    param.titre_repondants,
+    param.titreRespondants,
+    param.titre_visible_repondants,
+    param.titreVisibleRepondants,
+    param.titre_visible,
+    param.titreVisible,
+    param.titre,
+    param.nom,
+    payload.titre_repondants,
+    payload.titreRespondants,
+    payload.titre_autodiag,
+    payload.autodiagTitle,
+    payload.title,
+    payload.titre,
+    state.titre_repondants,
+    state.titreRespondants,
+    state.autodiagTitle,
+    state.title,
+    d.titre_repondants,
+    d.titreRespondants,
+    d.autodiagTitle,
+    d.title,
+    fallbackTitle
+  );
+}
+
+function normalizeFrontendPath(path = "") {
+  const cleanPath = String(path || "").trim() || "/";
+  if (/^https?:\/\//i.test(cleanPath)) {
+    try {
+      const url = new URL(cleanPath);
+      return `${url.pathname || "/"}${url.search || ""}${url.hash || ""}`;
+    } catch (err) {
+      return "/";
+    }
+  }
+  return cleanPath.startsWith("/") ? cleanPath : `/${cleanPath}`;
+}
+
+function buildProtectedFrontendUrl(path = "") {
+  const frontendUrl = process.env.FRONTEND_URL || "https://shiftstudio.intotheshift.io";
+  const nextPath = normalizeFrontendPath(path);
+  const encodedNext = encodeURIComponent(nextPath);
+  return `${frontendUrl}/login.html?next=${encodedNext}&redirect=${encodedNext}`;
+}
+
+function getPublicationRecipient(row) {
+  const commanditaire = extractProjectCommanditaire(row.data || {});
+  const ownerEmail = row.contact_email || row.user_email || "";
+  const clientName =
+    row.contact_name ||
+    row.user_company_name ||
+    `${row.user_first_name || ""} ${row.user_last_name || ""}`.trim() ||
+    "";
+
+  const recipients = buildRecipientSet({
+    primary: ownerEmail || commanditaire.email,
+    cc: [commanditaire.email, row.partner_email]
+  });
+
+  return {
+    to: recipients.to,
+    cc: recipients.cc,
+    name: clientName || commanditaire.name,
+    commanditaireName: commanditaire.name,
+    commanditaireEmail: commanditaire.email,
+    companyName: row.organization_name || row.user_company_name || "—"
+  };
+}
+
+function isReprogrammedProjectData(data = {}) {
+  const d = data && typeof data === "object" ? data : {};
+  return (
+    d.reprogrammed === true ||
+    d.isReprogrammed === true ||
+    d.campaign_reprogrammed === true ||
+    d.campaignReprogrammed === true ||
+    String(d.transmissionType || "").toLowerCase() === "reprogramming"
+  );
+}
+
+function buildProjectPublicationEmail({ row, recipient, reprogramming = false }) {
+  const title = extractProjectDisplayTitle(row.data || {}, row.title || "votre autodiagnostic");
+  const startDate = formatDateLongFr(row.campaign_start_date);
+  const endDate = formatDateLongFr(row.campaign_end_date);
+  const passationsLabel = row.organization_passations_pack === "illimite"
+    ? "Illimité"
+    : `${Math.max(0, Number(row.organization_passations_quota || 0) - Number(row.organization_passations_used || 0)).toLocaleString("fr-FR")} passations restantes`;
+  const hello = recipient.name || "";
+  const kitUrl = buildProtectedFrontendUrl(`/kit-communication.html?projectId=${encodeURIComponent(row.id)}`);
+  const mesAdUrl = buildProtectedFrontendUrl('/mes-autodiagnostics.html');
+  const shareUrl = row.share_url || "";
+  const resultsUrl = row.results_url || "";
+
+  if (reprogramming) {
+    return {
+      subject: `Votre campagne reprogrammée est publiée — ${title}`,
+      text:
+`Bonjour ${hello},
+
+La reprogrammation que vous avez transmise pour la campagne "${title}" a été publiée par Into The Shift.
+
+Le lien de diffusion est à nouveau actif avec les nouvelles dates de campagne.
+
+Entreprise : ${recipient.companyName}
+Dates de campagne : ${startDate} — ${endDate}
+Passations restantes : ${passationsLabel}
+Lien de passation : ${shareUrl || "—"}
+Lien du dashboard statistiques : ${resultsUrl || "—"}
+
+Accéder au kit de communication :
+${kitUrl}
+
+L’équipe Into The Shift`,
+      html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
+    <p>Bonjour ${escapeHtml(hello)},</p>
+    <p>La reprogrammation que vous avez transmise pour la campagne <strong>${escapeHtml(title)}</strong> a été publiée par <strong>Into The Shift</strong>.</p>
+    <p>Le lien de diffusion est à nouveau actif avec les nouvelles dates de campagne.</p>
+    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
+      <p style="margin:0"><strong>Entreprise :</strong> ${escapeHtml(recipient.companyName)}<br>
+      <strong>Dates de campagne :</strong> ${escapeHtml(startDate)} — ${escapeHtml(endDate)}<br>
+      <strong>Passations restantes :</strong> ${escapeHtml(passationsLabel)}</p>
+    </div>
+    ${shareUrl ? `<p style="margin:22px 0 10px"><a href="${escapeHtml(shareUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au lien de passation</a></p>` : ""}
+    ${resultsUrl ? `<p style="margin:10px 0"><a href="${escapeHtml(resultsUrl)}" style="display:inline-block;background:#eef6fb;color:#0d4c72;border:1px solid #d7e8f1;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au dashboard statistiques</a></p>` : ""}
+    <p style="margin:10px 0 22px"><a href="${escapeHtml(kitUrl)}" style="display:inline-block;background:#eef6fb;color:#0d4c72;border:1px solid #d7e8f1;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au kit de communication</a></p>
+    <p>L’équipe Into The Shift</p>
+  </div>
+</div>`
+    };
+  }
+
+  return {
+    subject: `Votre autodiagnostic est maintenant publié — ${title}`,
+    text:
+`Bonjour ${hello},
+
+Votre autodiagnostic "${title}" est maintenant publié sur Shift Studio.
+
+La campagne pourra être diffusée à la date de lancement que vous avez déterminée auprès des répondants.
+
+Vous retrouverez dans votre espace :
+- le lien de passation : ${shareUrl || "—"}
+- le lien du dashboard statistiques : ${resultsUrl || "—"}
+- les prochaines ressources de communication mises à disposition.
+
+Entreprise : ${recipient.companyName}
+Dates de campagne : ${startDate} — ${endDate}
+Passations restantes : ${passationsLabel}
+
+Accéder à votre espace Shift Studio :
+${mesAdUrl}
+
+L’équipe Into The Shift`,
+    html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
+    <p>Bonjour ${escapeHtml(hello)},</p>
+    <p>Votre autodiagnostic <strong>${escapeHtml(title)}</strong> est maintenant publié sur <strong>Shift Studio</strong>.</p>
+    <p>La campagne pourra être diffusée à la date de lancement que vous avez déterminée, avant cela votre lien n'est pas actif.</p>
+    <p>Vous retrouverez dans votre espace :</p>
+    <ul>
+      <li>le lien de passation,</li>
+      <li>le lien du dashboard statistiques,</li>
+      <li>les prochaines ressources de communication mises à disposition.</li>
+    </ul>
+    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
+      <p style="margin:0"><strong>Entreprise :</strong> ${escapeHtml(recipient.companyName)}<br>
+      <strong>Dates de campagne :</strong> ${escapeHtml(startDate)} — ${escapeHtml(endDate)}<br>
+      <strong>Passations restantes :</strong> ${escapeHtml(passationsLabel)}</p>
+    </div>
+    ${shareUrl ? `<p style="margin:22px 0 10px"><a href="${escapeHtml(shareUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au lien de passation</a></p>` : ""}
+    ${resultsUrl ? `<p style="margin:10px 0"><a href="${escapeHtml(resultsUrl)}" style="display:inline-block;background:#eef6fb;color:#0d4c72;border:1px solid #d7e8f1;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au dashboard statistiques</a></p>` : ""}
+    <p style="margin:10px 0 22px"><a href="${escapeHtml(mesAdUrl)}" style="display:inline-block;background:#eef6fb;color:#0d4c72;border:1px solid #d7e8f1;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder à mon espace Shift Studio</a></p>
+    <p>L’équipe Into The Shift</p>
+  </div>
+</div>`
+  };
+}
+
 function buildAdminCampaignAlertEmail({ type, row, daysBefore }) {
   const title = row.title || "autodiagnostic sans titre";
   const endDate = formatDateLongFr(row.campaign_end_date);
@@ -715,6 +923,81 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
   }
 
 
+
+  async function sendProjectPublicationEmail(projectId, options = {}) {
+    const result = await pool.query(`
+      SELECT
+        p.id,
+        p.title,
+        p.data,
+        p.share_url,
+        p.results_url,
+        p.campaign_start_date,
+        p.campaign_end_date,
+        p.publication_email_sent_at,
+        o.name AS organization_name,
+        o.contact_email,
+        o.contact_name,
+        o.passations_pack AS organization_passations_pack,
+        o.passations_quota AS organization_passations_quota,
+        o.passations_used AS organization_passations_used,
+        client.email AS user_email,
+        client.first_name AS user_first_name,
+        client.last_name AS user_last_name,
+        client.company_name AS user_company_name,
+        partner.email AS partner_email
+      FROM projects p
+      LEFT JOIN users client ON client.id = p.user_id
+      LEFT JOIN organizations o ON o.id = p.organization_id
+      LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
+      WHERE p.id = $1
+      LIMIT 1
+    `, [projectId]);
+
+    const row = result.rows[0];
+    if (!row) return { sent: false, reason: "PROJECT_NOT_FOUND" };
+    if (!row.share_url || !row.results_url) return { sent: false, reason: "MISSING_URLS" };
+
+    const reprogramming = options.reprogramming === true || (isReprogrammedProjectData(row.data || {}) && Boolean(row.publication_email_sent_at));
+    if (row.publication_email_sent_at && !reprogramming) return { sent: false, reason: "ALREADY_SENT" };
+
+    const recipient = getPublicationRecipient(row);
+    if (!recipient.to) return { sent: false, reason: "NO_RECIPIENT" };
+
+    const mail = buildProjectPublicationEmail({ row, recipient, reprogramming });
+    const mailResult = await sendTransactionalEmail({
+      to: recipient.to,
+      cc: recipient.cc || undefined,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html
+    });
+
+    if (mailResult.sent) {
+      if (!row.publication_email_sent_at) {
+        await pool.query(`UPDATE projects SET publication_email_sent_at = NOW() WHERE id = $1`, [projectId]);
+      }
+
+      if (typeof createNotification === "function") {
+        await createNotification({
+          audience: "client",
+          userId: row.user_id || null,
+          organizationId: row.organization_id || null,
+          projectId: row.id,
+          type: reprogramming ? "links" : "published",
+          title: reprogramming ? "Campagne reprogrammée publiée" : "Autodiagnostic publié",
+          message: reprogramming
+            ? `La reprogrammation de votre campagne « ${extractProjectDisplayTitle(row.data || {}, row.title || "votre autodiagnostic")} » a été publiée. Le lien de diffusion est à nouveau actif.`
+            : `Votre autodiagnostic « ${extractProjectDisplayTitle(row.data || {}, row.title || "votre autodiagnostic")} » est maintenant publié.`,
+          actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(projectId)}`,
+          metadata: { email: reprogramming ? "campaign_reprogramming_published" : "publication", reprogrammed: reprogramming, shareUrl: row.share_url || "", resultsUrl: row.results_url || "" }
+        });
+      }
+    }
+
+    return { ...mailResult, to: recipient.to, cc: recipient.cc || "", reprogramming };
+  }
+
   async function sendExtensionEmails(body = {}) {
     const ctx = buildTransmissionEmailContext(body || {});
     const sourcePayload = body.payload && typeof body.payload === "object" ? body.payload : body;
@@ -949,6 +1232,6 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
     };
   }
 
-  return { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendTransmissionEmails, sendExtensionEmails, sendReprogrammingEmails };
+  return { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendProjectPublicationEmail, sendTransmissionEmails, sendExtensionEmails, sendReprogrammingEmails };
 }
 

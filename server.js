@@ -1185,156 +1185,6 @@ function buildRecipientSet({ primary, cc = [] }) {
 }
 
 
-function getPublicationRecipient(row) {
-  const commanditaire = extractProjectCommanditaire(row.data || {});
-  const ownerEmail = row.contact_email || row.user_email || "";
-  const clientName =
-    row.contact_name ||
-    row.user_company_name ||
-    `${row.user_first_name || ""} ${row.user_last_name || ""}`.trim() ||
-    "";
-
-  const recipients = buildRecipientSet({
-    primary: ownerEmail || commanditaire.email,
-    cc: [commanditaire.email, row.partner_email]
-  });
-
-  return {
-    to: recipients.to,
-    cc: recipients.cc,
-    name: clientName || commanditaire.name,
-    commanditaireName: commanditaire.name,
-    commanditaireEmail: commanditaire.email,
-    companyName: row.organization_name || row.user_company_name || "—"
-  };
-}
-function buildPublicationEmail({ row, recipient }) {
-  const title = extractProjectDisplayTitle(row.data || {}, row.title || "votre autodiagnostic");
-  const startDate = formatDateLongFr(row.campaign_start_date);
-  const endDate = formatDateLongFr(row.campaign_end_date);
-  const passationsLabel = row.organization_passations_pack === "illimite"
-    ? "Illimité"
-    : `${Math.max(0, Number(row.organization_passations_quota || 0) - Number(row.organization_passations_used || 0)).toLocaleString("fr-FR")} passations restantes`;
-  const hello = recipient.name || "";
-  const mesAdUrl = buildProtectedFrontendUrl('/mes-autodiagnostics.html');
-  const shareUrl = row.share_url || "";
-  const resultsUrl = row.results_url || "";
-
-  return {
-    subject: `Votre autodiagnostic est maintenant publié — ${title}`,
-    text:
-`Bonjour ${hello},
-
-Votre autodiagnostic "${title}" est maintenant publié sur Shift Studio.
-
-La campagne pourra être diffusée à la date de lancement que vous avez déterminée auprès des répondants.
-
-Vous retrouverez dans votre espace :
-- le lien de passation : ${shareUrl || "—"}
-- le lien du dashboard statistiques : ${resultsUrl || "—"}
-- les prochaines ressources de communication mises à disposition.
-
-Entreprise : ${recipient.companyName}
-Dates de campagne : ${startDate} — ${endDate}
-Passations restantes : ${passationsLabel}
-
-Accéder à votre espace Shift Studio :
-${mesAdUrl}
-
-L’équipe Into The Shift`,
-    html:
-`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
-  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
-    <p>Bonjour ${escapeHtml(hello)},</p>
-    <p>Votre autodiagnostic <strong>${escapeHtml(title)}</strong> est maintenant publié sur <strong>Shift Studio</strong>.</p>
-    <p>La campagne pourra être diffusée à la date de lancement que vous avez déterminée, avant cela votre lien n'est pas actif.</p>
-    <p>Vous retrouverez dans votre espace :</p>
-    <ul>
-      <li>le lien de passation,</li>
-      <li>le lien du dashboard statistiques,</li>
-      <li>les prochaines ressources de communication mises à disposition.</li>
-    </ul>
-    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
-      <p style="margin:0"><strong>Entreprise :</strong> ${escapeHtml(recipient.companyName)}<br>
-      <strong>Dates de campagne :</strong> ${escapeHtml(startDate)} — ${escapeHtml(endDate)}<br>
-      <strong>Passations restantes :</strong> ${escapeHtml(passationsLabel)}</p>
-    </div>
-    ${shareUrl ? `<p style="margin:22px 0 10px"><a href="${escapeHtml(shareUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au lien de passation</a></p>` : ""}
-    ${resultsUrl ? `<p style="margin:10px 0"><a href="${escapeHtml(resultsUrl)}" style="display:inline-block;background:#eef6fb;color:#0d4c72;border:1px solid #d7e8f1;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au dashboard statistiques</a></p>` : ""}
-    <p style="margin:10px 0 22px"><a href="${escapeHtml(mesAdUrl)}" style="display:inline-block;background:#eef6fb;color:#0d4c72;border:1px solid #d7e8f1;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder à mon espace Shift Studio</a></p>
-    <p>L’équipe Into The Shift</p>
-  </div>
-</div>`
-  };
-}
-
-async function sendProjectPublicationEmail(projectId) {
-  const result = await pool.query(`
-    SELECT
-      p.id,
-      p.title,
-      p.data,
-      p.share_url,
-      p.results_url,
-      p.campaign_start_date,
-      p.campaign_end_date,
-      p.publication_email_sent_at,
-      o.name AS organization_name,
-      o.contact_email,
-      o.contact_name,
-      o.passations_pack AS organization_passations_pack,
-      o.passations_quota AS organization_passations_quota,
-      o.passations_used AS organization_passations_used,
-         o.pack_expires_at AS organization_pack_expires_at,
-      client.email AS user_email,
-      client.first_name AS user_first_name,
-      client.last_name AS user_last_name,
-      client.company_name AS user_company_name,
-      partner.email AS partner_email
-    FROM projects p
-    LEFT JOIN users client ON client.id = p.user_id
-    LEFT JOIN organizations o ON o.id = p.organization_id
-    LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
-    WHERE p.id = $1
-    LIMIT 1
-  `, [projectId]);
-
-  const row = result.rows[0];
-  if (!row) return { sent: false, reason: "PROJECT_NOT_FOUND" };
-  if (row.publication_email_sent_at) return { sent: false, reason: "ALREADY_SENT" };
-  if (!row.share_url || !row.results_url) return { sent: false, reason: "MISSING_URLS" };
-
-  const recipient = getPublicationRecipient(row);
-  if (!recipient.to) return { sent: false, reason: "NO_RECIPIENT" };
-
-  const mail = buildPublicationEmail({ row, recipient });
-  const mailResult = await sendTransactionalEmail({
-    to: recipient.to,
-    cc: recipient.cc || undefined,
-    subject: mail.subject,
-    text: mail.text,
-    html: mail.html
-  });
-
-  if (mailResult.sent) {
-    await pool.query(`UPDATE projects SET publication_email_sent_at = NOW() WHERE id = $1`, [projectId]);
-    await createClientNotificationForProject(projectId, {
-      type: "published",
-      title: "Autodiagnostic publié",
-      message: `Votre autodiagnostic « ${extractProjectDisplayTitle(row.data || {}, row.title || "votre autodiagnostic")} » est maintenant publié.`,
-      actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(projectId)}`,
-      metadata: { email: "publication", shareUrl: row.share_url || "", resultsUrl: row.results_url || "" }
-    });
-  }
-
-  return {
-    ...mailResult,
-    to: recipient.to,
-    cc: recipient.cc || ""
-  };
-}
-
-
 async function getProjectForCommunicationAccess(projectId, user) {
   const result = await pool.query(
     `SELECT
@@ -1770,7 +1620,7 @@ function formatNotification(row = {}) {
 }
 
 const campaignAlerts = createCampaignAlerts({ pool, sendTransactionalEmail, createNotification });
-const { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendTransmissionEmails, sendExtensionEmails, sendReprogrammingEmails } = campaignAlerts;
+const { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendProjectPublicationEmail, sendTransmissionEmails, sendExtensionEmails, sendReprogrammingEmails } = campaignAlerts;
 
 const packAlerts = createPackAlerts({
   pool,
@@ -4289,14 +4139,9 @@ app.patch("/api/admin/projects/:id/status", auth, requireAdmin, async (req, res)
       });
     }
 
+    let publicationEmail = { sent: false, reason: "NOT_TRIGGERED" };
     if (status === "published" && currentStatus !== "published" && (currentStatus === "unpublished" || isReprogrammingRepublication)) {
-      await createClientNotificationForProject(id, {
-        type: "links",
-        title: "Campagne republiée",
-        message: "Votre campagne a été republiée. Le lien de diffusion est à nouveau actif.",
-        actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(id)}`,
-        metadata: { source: "admin_status", previousStatus: currentStatus, reprogrammed: isReprogrammingRepublication }
-      });
+      publicationEmail = await sendProjectPublicationEmail(id, { reprogramming: isReprogrammingRepublication });
     }
 
     res.json({
@@ -4869,7 +4714,7 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
 
     let publicationEmail = { sent: false, reason: "NOT_TRIGGERED" };
     if (finalStatus === "published" && currentStatus !== "published" && !existing.publication_email_sent_at) {
-      publicationEmail = await sendProjectPublicationEmail(id);
+      publicationEmail = await sendProjectPublicationEmail(id, { reprogramming: false });
     }
 
     let statusNotification = { sent: false, reason: "NOT_TRIGGERED" };
@@ -4885,13 +4730,10 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
 
     const isReprogrammingRepublication = isReprogrammedProjectData(existing.data || {}) && Boolean(existing.publication_email_sent_at);
     if (finalStatus === "published" && currentStatus !== "published" && existing.publication_email_sent_at && (currentStatus === "unpublished" || isReprogrammingRepublication)) {
-      statusNotification = await createClientNotificationForProject(id, {
-        type: "links",
-        title: "Campagne republiée",
-        message: "Votre campagne a été republiée. Le lien de diffusion est à nouveau actif.",
-        actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(id)}`,
-        metadata: { source: "admin_publication", previousStatus: currentStatus, reprogrammed: isReprogrammingRepublication, shareUrl: nextShareUrl || "", resultsUrl: nextResultsUrl || "" }
-      }) || { sent: false, reason: "NOT_CREATED" };
+      publicationEmail = await sendProjectPublicationEmail(id, { reprogramming: isReprogrammingRepublication });
+      statusNotification = publicationEmail.sent
+        ? { sent: true, source: "publication_email" }
+        : { sent: false, reason: publicationEmail.reason || "EMAIL_NOT_SENT" };
     }
 
     res.json({ ok: true, project: result.rows[0], publicationEmail, statusNotification });
