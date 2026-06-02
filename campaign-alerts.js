@@ -507,7 +507,7 @@ L’équipe Into The Shift`;
 
 function buildClientReprogrammingEmail(ctx) {
   const helloName = ctx.clientName || "";
-  const oldEndDate = formatDateLongFr(ctx.oldEndDate || ctx.previousEndDate || "");
+  const newStartDate = formatDateLongFr(ctx.newStartDate || ctx.campaignStartDate || ctx.startDate || "");
   const newEndDate = formatDateLongFr(ctx.newEndDate || ctx.campaignEndDate || ctx.endDate || "");
 
   return {
@@ -517,8 +517,9 @@ function buildClientReprogrammingEmail(ctx) {
 
 Votre demande de reprogrammation de la campagne "${ctx.autodiagTitle}" a bien été transmise à Into The Shift.
 
-Ancienne date de clôture : ${oldEndDate}
-Nouvelle date de clôture demandée : ${newEndDate}
+Nouvelles dates demandées :
+Date de lancement : ${newStartDate}
+Date de clôture : ${newEndDate}
 
 Notre équipe va republier la campagne avec les nouvelles dates. Vous recevrez une notification dès que le lien de diffusion sera à nouveau actif.
 
@@ -530,9 +531,10 @@ L’équipe Into The Shift`,
       <div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55">
         <p>Bonjour ${escapeHtml(helloName)},</p>
         <p>Votre demande de reprogrammation de la campagne <strong>${escapeHtml(ctx.autodiagTitle)}</strong> a bien été transmise à <strong>Into The Shift</strong>.</p>
+        <p><strong>Nouvelles dates demandées :</strong></p>
         <p>
-          <strong>Ancienne date de clôture :</strong> ${escapeHtml(oldEndDate)}<br>
-          <strong>Nouvelle date de clôture demandée :</strong> ${escapeHtml(newEndDate)}
+          <strong>Date de lancement :</strong> ${escapeHtml(newStartDate)}<br>
+          <strong>Date de clôture :</strong> ${escapeHtml(newEndDate)}
         </p>
         <p>Notre équipe va republier la campagne avec les nouvelles dates. Vous recevrez une notification dès que le lien de diffusion sera à nouveau actif.</p>
         <p style="margin:22px 0 10px">
@@ -548,7 +550,7 @@ L’équipe Into The Shift`,
 }
 
 function buildAdminReprogrammingEmail(ctx) {
-  const oldEndDate = formatDateLongFr(ctx.oldEndDate || ctx.previousEndDate || "");
+  const newStartDate = formatDateLongFr(ctx.newStartDate || ctx.campaignStartDate || ctx.startDate || "");
   const newEndDate = formatDateLongFr(ctx.newEndDate || ctx.campaignEndDate || ctx.endDate || "");
 
   return {
@@ -561,7 +563,7 @@ Entreprise : ${ctx.companyName || "—"}
 Contact : ${ctx.clientName || "—"}
 Email : ${ctx.clientEmail || "—"}
 Autodiagnostic : ${ctx.autodiagTitle || "—"}
-Ancienne date de clôture : ${oldEndDate}
+Nouvelle date de lancement : ${newStartDate}
 Nouvelle date de clôture : ${newEndDate}
 
 Action interne : republier la campagne avec les nouvelles dates et paramètres.`,
@@ -573,7 +575,7 @@ Action interne : republier la campagne avec les nouvelles dates et paramètres.`
           <strong>Contact :</strong> ${escapeHtml(ctx.clientName || "—")}<br>
           <strong>Email :</strong> ${escapeHtml(ctx.clientEmail || "—")}<br>
           <strong>Autodiagnostic :</strong> ${escapeHtml(ctx.autodiagTitle || "—")}<br>
-          <strong>Ancienne date de clôture :</strong> ${escapeHtml(oldEndDate)}<br>
+          <strong>Nouvelle date de lancement :</strong> ${escapeHtml(newStartDate)}<br>
           <strong>Nouvelle date de clôture :</strong> ${escapeHtml(newEndDate)}
         </p>
         <p>Action interne : republier la campagne avec les nouvelles dates et paramètres.</p>
@@ -1106,6 +1108,20 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
       sourcePayload.previousEndDate ||
       sourcePayload.previous_end_date ||
       sourcePayload.old_end_date ||
+      "";
+
+    ctx.newStartDate =
+      body.newStartDate ||
+      body.campaignStartDate ||
+      body.campaign_start_date ||
+      body.startDate ||
+      body.start_date ||
+      sourcePayload.newStartDate ||
+      sourcePayload.campaignStartDate ||
+      sourcePayload.campaign_start_date ||
+      sourcePayload.date_lancement ||
+      sourcePayload.startDate ||
+      sourcePayload.start_date ||
       "";
 
     ctx.newEndDate =
