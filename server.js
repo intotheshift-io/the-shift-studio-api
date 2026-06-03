@@ -745,6 +745,43 @@ function extractProjectDisplayTitle(data = {}, fallbackTitle = "") {
 
 
 
+function applyRespondentTitleToProjectData(data = {}, respondentTitle = "") {
+  const safeData = data && typeof data === "object" && !Array.isArray(data) ? { ...data } : {};
+  const title = String(respondentTitle || "").trim();
+
+  const applyAliases = (target) => {
+    if (!target || typeof target !== "object") return target;
+    target.titre = title;
+    target.titre_repondants = title;
+    target.titreRespondants = title;
+    target.titre_visible_repondants = title;
+    target.titreVisibleRepondants = title;
+    target.titre_visible = title;
+    target.titreVisible = title;
+    return target;
+  };
+
+  safeData.parametrage = applyAliases({ ...(safeData.parametrage && typeof safeData.parametrage === "object" ? safeData.parametrage : {}) });
+  applyAliases(safeData);
+
+  if (safeData.state && typeof safeData.state === "object") {
+    safeData.state = { ...safeData.state };
+    safeData.state.parametrage = applyAliases({ ...(safeData.state.parametrage && typeof safeData.state.parametrage === "object" ? safeData.state.parametrage : {}) });
+    applyAliases(safeData.state);
+  }
+
+  if (safeData.payload && typeof safeData.payload === "object") {
+    safeData.payload = { ...safeData.payload };
+    safeData.payload.parametrage = applyAliases({ ...(safeData.payload.parametrage && typeof safeData.payload.parametrage === "object" ? safeData.payload.parametrage : {}) });
+    applyAliases(safeData.payload);
+  }
+
+  safeData.respondent_title_updated_at = new Date().toISOString();
+  safeData.respondentTitleUpdatedAt = safeData.respondent_title_updated_at;
+
+  return safeData;
+}
+
 function requestMarksProjectAsSent(data = {}, body = {}) {
   const d = data && typeof data === "object" ? data : {};
   const payload = d.payload && typeof d.payload === "object" ? d.payload : {};
@@ -2667,6 +2704,63 @@ app.post("/api/projects", auth, async (req, res) => {
   }
 
   res.json({ project: result.rows[0] });
+});
+
+app.patch("/api/projects/:id/respondent-title", auth, async (req, res) => {
+  const projectId = req.params.id;
+  const respondentTitle = cleanProjectDisplayTitle(req.body?.title || req.body?.respondentTitle || req.body?.titre || "");
+
+  if (!respondentTitle) {
+    return res.status(400).json({ error: "Titre visible répondants requis" });
+  }
+
+  try {
+    const currentResult = await pool.query(
+      `SELECT p.*
+       FROM projects p
+       LEFT JOIN organizations o ON o.id = p.organization_id
+       WHERE p.id = $1
+         AND (
+           p.user_id = $2
+           OR p.created_by = $2
+           OR o.created_by = $2
+           OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = p.organization_id AND ou.user_id = $2)
+           OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
+         )
+       LIMIT 1`,
+      [projectId, req.user.id]
+    );
+
+    const currentProject = currentResult.rows[0];
+    if (!currentProject) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const updatedData = applyRespondentTitleToProjectData(currentProject.data || {}, respondentTitle);
+
+    const updateResult = await pool.query(
+      `UPDATE projects
+       SET title = $1,
+           data = $2,
+           updated_at = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [respondentTitle, updatedData, projectId]
+    );
+
+    const project = updateResult.rows[0];
+    res.json({
+      ok: true,
+      project: {
+        ...project,
+        title: respondentTitle,
+        displayTitle: respondentTitle
+      }
+    });
+  } catch (err) {
+    console.error("Erreur modification titre répondants", err);
+    res.status(500).json({ error: "Impossible de modifier le titre visible répondants" });
+  }
 });
 
 app.get("/api/projects/:id", auth, async (req, res) => {
