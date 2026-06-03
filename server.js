@@ -2414,6 +2414,14 @@ function compactCustomModelData(data = {}) {
   delete clone.shareUrl;
   delete clone.results_url;
   delete clone.resultsUrl;
+  delete clone.campaignStartDate;
+  delete clone.campaign_start_date;
+  delete clone.startDate;
+  delete clone.start_date;
+  delete clone.campaignEndDate;
+  delete clone.campaign_end_date;
+  delete clone.endDate;
+  delete clone.end_date;
   delete clone.published_at;
   delete clone.publishedAt;
   delete clone.unpublished_at;
@@ -2423,12 +2431,29 @@ function compactCustomModelData(data = {}) {
   delete clone.configTransmise;
   delete clone.config_transmise;
   delete clone.submitted;
+  if (clone.parametrage && typeof clone.parametrage === "object") {
+    delete clone.parametrage.date_lancement;
+    delete clone.parametrage.dateLancement;
+    delete clone.parametrage.date_cloture;
+    delete clone.parametrage.dateCloture;
+    delete clone.parametrage.pack_choisi;
+    delete clone.parametrage.packChoisi;
+    delete clone.parametrage.selectedPack;
+    delete clone.parametrage.pack_upgrade_requested;
+    delete clone.parametrage.packUpgradeRequested;
+    delete clone.parametrage.pack_upgrade_status;
+    delete clone.parametrage.packUpgradeStatus;
+  }
   clone.mode = clone.mode || "blank";
   clone.source = "custom_model";
   clone.blankSetupDone = true;
   clone.status = "draft";
   clone.current_step = "questions";
   clone.step = "questions";
+  delete clone.customModelId;
+  delete clone.custom_model_id;
+  delete clone.customModelSavedAt;
+  delete clone.custom_model_saved_at;
   clone.savedAsCustomModel = false;
   clone.isCustomModel = false;
   return clone;
@@ -2522,23 +2547,55 @@ app.post("/api/custom-models", auth, async (req, res) => {
     const modelData = compactCustomModelData(data);
     const meta = extractCustomModelMeta(modelData, req.body || {});
 
-    const result = await pool.query(
-      `INSERT INTO custom_catalogue_models (organization_id, user_id, source_project_id, title, subject, audience, description, data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-       RETURNING *`,
-      [
-        organizationId || null,
-        req.user.id,
-        sourceProjectId || null,
-        meta.title,
-        meta.subject,
-        meta.audience,
-        meta.description,
-        JSON.stringify(modelData)
-      ]
-    );
+    let result;
+    let updated = false;
 
-    res.json({ model: formatCustomCatalogueModel(result.rows[0]) });
+    if (sourceProjectId) {
+      result = await pool.query(
+        `UPDATE custom_catalogue_models
+         SET title = $1,
+             subject = $2,
+             audience = $3,
+             description = $4,
+             data = $5::jsonb,
+             updated_at = NOW()
+         WHERE source_project_id = $6
+           AND user_id = $7
+           AND (organization_id IS NOT DISTINCT FROM $8)
+         RETURNING *`,
+        [
+          meta.title,
+          meta.subject,
+          meta.audience,
+          meta.description,
+          JSON.stringify(modelData),
+          sourceProjectId,
+          req.user.id,
+          organizationId || null
+        ]
+      );
+      updated = Boolean(result.rows[0]);
+    }
+
+    if (!result || !result.rows[0]) {
+      result = await pool.query(
+        `INSERT INTO custom_catalogue_models (organization_id, user_id, source_project_id, title, subject, audience, description, data)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+         RETURNING *`,
+        [
+          organizationId || null,
+          req.user.id,
+          sourceProjectId || null,
+          meta.title,
+          meta.subject,
+          meta.audience,
+          meta.description,
+          JSON.stringify(modelData)
+        ]
+      );
+    }
+
+    res.json({ model: formatCustomCatalogueModel(result.rows[0]), updated });
   } catch (err) {
     console.error("POST /api/custom-models", err);
     res.status(500).json({ error: "Erreur enregistrement modèle personnalisé." });
@@ -2569,20 +2626,30 @@ app.post("/api/custom-models/:id/use", auth, async (req, res) => {
     if (!model) return res.status(404).json({ error: "Modèle personnalisé introuvable." });
 
     const newData = compactCustomModelData(model.data || {});
+    const baseTitle = model.title || newData.title || "Autodiagnostic personnalisé";
+    const projectTitle = `Copie de - ${baseTitle}`;
     newData.source = "custom_model";
     newData.customModelId = model.id;
     newData.custom_model_id = model.id;
-    newData.title = model.title || newData.title || "Autodiagnostic personnalisé";
+    newData.sourceCustomModelTitle = baseTitle;
+    newData.source_custom_model_title = baseTitle;
+    newData.title = projectTitle;
     newData.subject = model.subject || newData.subject || "Personnalisé";
     newData.theme = model.subject || newData.theme || "Personnalisé";
     newData.audience = model.audience || newData.audience || "Collaborateurs";
     newData.objective = model.description || newData.objective || "";
+    newData.parametrage = newData.parametrage && typeof newData.parametrage === "object" ? newData.parametrage : {};
+    newData.parametrage.titre = projectTitle;
+    newData.parametrage.titre_repondants = projectTitle;
+    newData.parametrage.titreRespondants = projectTitle;
+    newData.parametrage.titre_visible_repondants = projectTitle;
+    newData.parametrage.titreVisibleRepondants = projectTitle;
 
     const result = await pool.query(
       `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step)
        VALUES ($1, $2, 'draft', $3::jsonb, $1, $4, 'questions')
        RETURNING *`,
-      [req.user.id, newData.title, JSON.stringify(newData), model.organization_id || null]
+      [req.user.id, projectTitle, JSON.stringify(newData), model.organization_id || null]
     );
 
     res.json({ project: result.rows[0] });
