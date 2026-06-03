@@ -58,6 +58,8 @@ function formatUser(user) {
     sector: user.sector || "",
     organizationLogoName: user.organization_logo_name || "",
     organizationLogoDataUrl: user.organization_logo_data_url || "",
+    profilePhotoName: user.profile_photo_name || "",
+    profilePhotoDataUrl: user.profile_photo_data_url || "",
     passationLogoName: user.passation_logo_name || "",
     passationLogoDataUrl: user.passation_logo_data_url || "",
     status: user.status || "active",
@@ -274,6 +276,16 @@ async function initDb() {
   await pool.query(`
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS organization_logo_data_url TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS profile_photo_name TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS profile_photo_data_url TEXT;
   `);
 
   await pool.query(`
@@ -1892,7 +1904,7 @@ app.post("/api/register", async (req, res) => {
     const userResult = await pool.query(
       `INSERT INTO users (email, password_hash, first_name, last_name, company_name, job_title, sector, role)
        VALUES ($1, $2, $3, $4, $5, $6, $7, 'client')
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
       [email.toLowerCase(), passwordHash, firstName || "", lastName || "", companyName || "", jobTitle || "", sector || ""]
     );
 
@@ -2070,7 +2082,7 @@ app.post("/api/reset-password", async (req, res) => {
 
 app.get("/api/me", auth, async (req, res) => {
   const result = await pool.query(
-    `SELECT id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at
+    `SELECT id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at
      FROM users
      WHERE id = $1`,
     [req.user.id]
@@ -2299,6 +2311,8 @@ app.patch("/api/me", auth, async (req, res) => {
     sector,
     organizationLogoName,
     organizationLogoDataUrl,
+    profilePhotoName,
+    profilePhotoDataUrl,
     passationLogoName,
     passationLogoDataUrl
   } = req.body;
@@ -2307,6 +2321,7 @@ app.patch("/api/me", auth, async (req, res) => {
     const currentResult = await pool.query(
       `SELECT id, email, first_name, last_name, company_name, job_title, sector,
               organization_logo_name, organization_logo_data_url,
+              profile_photo_name, profile_photo_data_url,
               passation_logo_name, passation_logo_data_url,
               role, status, must_change_password, passations_quota, passations_used, created_at
        FROM users
@@ -2319,6 +2334,15 @@ app.patch("/api/me", auth, async (req, res) => {
       return res.status(404).json({ error: "Utilisateur introuvable" });
     }
 
+    if (profilePhotoDataUrl !== undefined && profilePhotoDataUrl !== null && String(profilePhotoDataUrl || "")) {
+      const photo = String(profilePhotoDataUrl || "");
+      const validPrefix = photo.startsWith("data:image/png;base64,") || photo.startsWith("data:image/jpeg;base64,");
+      const approxBytes = Math.ceil((photo.split(",")[1] || "").length * 3 / 4);
+      if (!validPrefix || approxBytes > 500 * 1024) {
+        return res.status(400).json({ error: "Photo de profil invalide ou trop lourde. JPG/PNG, 500 Ko maximum." });
+      }
+    }
+
     const result = await pool.query(
       `UPDATE users
        SET first_name = $1,
@@ -2328,11 +2352,14 @@ app.patch("/api/me", auth, async (req, res) => {
            sector = $5,
            organization_logo_name = $6,
            organization_logo_data_url = $7,
-           passation_logo_name = $8,
-           passation_logo_data_url = $9
-       WHERE id = $10
+           profile_photo_name = $8,
+           profile_photo_data_url = $9,
+           passation_logo_name = $10,
+           passation_logo_data_url = $11
+       WHERE id = $12
        RETURNING id, email, first_name, last_name, company_name, job_title, sector,
                  organization_logo_name, organization_logo_data_url,
+                 profile_photo_name, profile_photo_data_url,
                  passation_logo_name, passation_logo_data_url,
                  role, status, must_change_password, passations_quota, passations_used, created_at`,
       [
@@ -2343,6 +2370,8 @@ app.patch("/api/me", auth, async (req, res) => {
         sector !== undefined ? sector || "" : current.sector || "",
         organizationLogoName !== undefined && organizationLogoName !== null ? organizationLogoName : current.organization_logo_name,
         organizationLogoDataUrl !== undefined && organizationLogoDataUrl !== null ? organizationLogoDataUrl : current.organization_logo_data_url,
+        profilePhotoName !== undefined && profilePhotoName !== null ? profilePhotoName : current.profile_photo_name,
+        profilePhotoDataUrl !== undefined && profilePhotoDataUrl !== null ? profilePhotoDataUrl : current.profile_photo_data_url,
         passationLogoName !== undefined && passationLogoName !== null ? passationLogoName : current.passation_logo_name,
         passationLogoDataUrl !== undefined && passationLogoDataUrl !== null ? passationLogoDataUrl : current.passation_logo_data_url,
         req.user.id
@@ -2392,7 +2421,7 @@ app.patch("/api/me/password", auth, async (req, res) => {
            reset_password_token_hash = NULL,
            reset_password_expires_at = NULL
        WHERE id = $2
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
       [passwordHash, req.user.id]
     );
 
@@ -3388,7 +3417,7 @@ app.put("/api/projects/:id", auth, async (req, res) => {
 app.get("/api/partner/me", auth, requirePartnerOrAdmin, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at
+      `SELECT id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at
        FROM users
        WHERE id = $1`,
       [req.user.id]
@@ -3731,7 +3760,7 @@ app.patch("/api/admin/users/:id/passations", auth, requireAdmin, async (req, res
        SET passations_quota = $1,
            passations_used = $2
        WHERE id = $3
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
       [
         Number(passationsQuota || 0),
         Number(passationsUsed || 0),
@@ -3759,7 +3788,7 @@ app.patch("/api/admin/users/:id/company", auth, requireAdmin, async (req, res) =
       `UPDATE users
        SET company_name = $1
        WHERE id = $2
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
       [
         companyName || "",
         id
@@ -3797,7 +3826,7 @@ app.patch("/api/admin/users/:id/profile", auth, requireAdmin, async (req, res) =
            job_title = $2,
            sector = $3
        WHERE id = $4
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
       [
         companyName !== undefined ? companyName || "" : current.rows[0].company_name || "",
         jobTitle !== undefined ? jobTitle || "" : current.rows[0].job_title || "",
@@ -3844,7 +3873,7 @@ app.patch("/api/admin/users/:id/status", auth, requireAdmin, async (req, res) =>
       `UPDATE users
        SET status = $1
        WHERE id = $2
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
       [safeStatus, id]
     );
 
@@ -4074,7 +4103,7 @@ app.post("/api/admin/organizations/:id/users", auth, requireAdmin, async (req, r
     const userResult = await pool.query(
       `INSERT INTO users (email, password_hash, first_name, last_name, company_name, job_title, sector, role, status, must_change_password)
        VALUES ($1, $2, $3, $4, $5, $6, $7, 'client', 'active', true)
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
       [
         email.toLowerCase(),
         passwordHash,
@@ -5610,7 +5639,7 @@ app.post("/api/admin/users", auth, requireAdmin, async (req, res) => {
     const userResult = await pool.query(
       `INSERT INTO users (email, password_hash, first_name, last_name, company_name, job_title, sector, role, status, must_change_password)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', true)
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
       [
         email.toLowerCase(),
         passwordHash,
@@ -5714,7 +5743,7 @@ app.patch("/api/admin/users/:id/role", auth, requireAdmin, async (req, res) => {
       `UPDATE users
        SET role = $1
        WHERE id = $2
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
       [role, id]
     );
 
@@ -5754,7 +5783,7 @@ app.delete("/api/admin/users/:id", auth, requireAdmin, async (req, res) => {
       `UPDATE users
        SET status = 'deleted'
        WHERE id = $1
-       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+       RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
       [id]
     );
 
