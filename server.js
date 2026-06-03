@@ -597,6 +597,32 @@ async function initDb() {
     ALTER TABLE projects
     ADD COLUMN IF NOT EXISTS communication_assets_email_sent_at TIMESTAMP;
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS custom_catalogue_models (
+      id SERIAL PRIMARY KEY,
+      organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      source_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+      title TEXT NOT NULL,
+      subject TEXT,
+      audience TEXT,
+      description TEXT,
+      data JSONB DEFAULT '{}'::jsonb,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_custom_catalogue_models_org
+    ON custom_catalogue_models(organization_id, updated_at DESC);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_custom_catalogue_models_user
+    ON custom_catalogue_models(user_id, updated_at DESC);
+  `);
 }
 
 async function auth(req, res, next) {
@@ -1844,6 +1870,7 @@ app.get("/debug-version", (req, res) => {
     hasCampaignExtensionEmails: true,
     hasCampaignReprogrammingEmails: true,
     hasOrganizationUsersRoute: true,
+    hasCustomCatalogueModels: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -2373,6 +2400,195 @@ app.patch("/api/me/password", auth, async (req, res) => {
   } catch (err) {
     console.error("Erreur changement mot de passe", err);
     res.status(500).json({ error: "Erreur changement mot de passe" });
+  }
+});
+
+
+function compactCustomModelData(data = {}) {
+  const source = data && typeof data === "object" ? data : {};
+  const clone = JSON.parse(JSON.stringify(source));
+  delete clone.currentAdId;
+  delete clone.project_id;
+  delete clone.projectId;
+  delete clone.share_url;
+  delete clone.shareUrl;
+  delete clone.results_url;
+  delete clone.resultsUrl;
+  delete clone.published_at;
+  delete clone.publishedAt;
+  delete clone.unpublished_at;
+  delete clone.unpublishedAt;
+  delete clone.archived_at;
+  delete clone.archivedAt;
+  delete clone.configTransmise;
+  delete clone.config_transmise;
+  delete clone.submitted;
+  clone.mode = clone.mode || "blank";
+  clone.source = "custom_model";
+  clone.blankSetupDone = true;
+  clone.status = "draft";
+  clone.current_step = "questions";
+  clone.step = "questions";
+  clone.savedAsCustomModel = false;
+  clone.isCustomModel = false;
+  return clone;
+}
+
+function extractCustomModelMeta(data = {}, body = {}) {
+  const d = data && typeof data === "object" ? data : {};
+  const custom = d.customModel && typeof d.customModel === "object" ? d.customModel : {};
+  return {
+    title: firstNonEmptyValue(body.title, custom.title, d.title, d.autodiagTitle, "Modèle personnalisé"),
+    subject: firstNonEmptyValue(body.subject, custom.subject, d.subject, d.theme, "Personnalisé"),
+    audience: firstNonEmptyValue(body.audience, custom.audience, d.audience, "Collaborateurs"),
+    description: firstNonEmptyValue(body.description, custom.description, d.objective, d.description, "Modèle créé à partir d’une page vierge")
+  };
+}
+
+function formatCustomCatalogueModel(row = {}) {
+  return {
+    id: row.id,
+    organizationId: row.organization_id || null,
+    userId: row.user_id || null,
+    sourceProjectId: row.source_project_id || null,
+    title: row.title || "Modèle personnalisé",
+    subject: row.subject || "Personnalisé",
+    audience: row.audience || "Collaborateurs",
+    description: row.description || "",
+    data: row.data || {},
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+app.get("/api/custom-models", auth, async (req, res) => {
+  try {
+    const orgIds = await getUserNotificationOrganizationIds(req.user.id);
+    const params = [req.user.id];
+    let orgClause = "";
+    if (orgIds.length) {
+      params.push(orgIds);
+      orgClause = "OR organization_id = ANY($2::int[])";
+    }
+    const adminClause = String(req.user.role || "").toLowerCase() === "admin" ? "OR TRUE" : "";
+
+    const result = await pool.query(
+      `SELECT *
+       FROM custom_catalogue_models
+       WHERE user_id = $1
+          ${orgClause}
+          ${adminClause}
+       ORDER BY updated_at DESC`,
+      params
+    );
+
+    res.json({ models: result.rows.map(formatCustomCatalogueModel) });
+  } catch (err) {
+    console.error("GET /api/custom-models", err);
+    res.status(500).json({ error: "Erreur chargement modèles personnalisés." });
+  }
+});
+
+app.post("/api/custom-models", auth, async (req, res) => {
+  try {
+    const sourceProjectId = req.body?.projectId || req.body?.project_id || null;
+    let data = req.body?.data && typeof req.body.data === "object" ? req.body.data : null;
+    let organizationId = req.body?.organizationId || req.body?.organization_id || null;
+
+    if (sourceProjectId) {
+      const projectResult = await pool.query(
+        `SELECT p.*
+         FROM projects p
+         LEFT JOIN organization_users ou ON ou.organization_id = p.organization_id AND ou.user_id = $2
+         WHERE p.id = $1
+           AND (
+             p.user_id = $2
+             OR p.created_by = $2
+             OR ou.user_id IS NOT NULL
+             OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
+           )
+         LIMIT 1`,
+        [sourceProjectId, req.user.id]
+      );
+      const project = projectResult.rows[0];
+      if (!project) return res.status(404).json({ error: "Projet source introuvable." });
+      data = data || project.data || {};
+      organizationId = organizationId || project.organization_id || null;
+    }
+
+    if (!data) return res.status(400).json({ error: "Données du modèle requises." });
+    if (!organizationId) organizationId = await getUserPrimaryOrganizationId(req.user.id);
+
+    const modelData = compactCustomModelData(data);
+    const meta = extractCustomModelMeta(modelData, req.body || {});
+
+    const result = await pool.query(
+      `INSERT INTO custom_catalogue_models (organization_id, user_id, source_project_id, title, subject, audience, description, data)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+       RETURNING *`,
+      [
+        organizationId || null,
+        req.user.id,
+        sourceProjectId || null,
+        meta.title,
+        meta.subject,
+        meta.audience,
+        meta.description,
+        JSON.stringify(modelData)
+      ]
+    );
+
+    res.json({ model: formatCustomCatalogueModel(result.rows[0]) });
+  } catch (err) {
+    console.error("POST /api/custom-models", err);
+    res.status(500).json({ error: "Erreur enregistrement modèle personnalisé." });
+  }
+});
+
+app.post("/api/custom-models/:id/use", auth, async (req, res) => {
+  try {
+    const orgIds = await getUserNotificationOrganizationIds(req.user.id);
+    const params = [req.params.id, req.user.id];
+    let orgClause = "";
+    if (orgIds.length) {
+      params.push(orgIds);
+      orgClause = "OR organization_id = ANY($3::int[])";
+    }
+    const adminClause = String(req.user.role || "").toLowerCase() === "admin" ? "OR TRUE" : "";
+
+    const modelResult = await pool.query(
+      `SELECT *
+       FROM custom_catalogue_models
+       WHERE id = $1
+         AND (user_id = $2 ${orgClause} ${adminClause})
+       LIMIT 1`,
+      params
+    );
+
+    const model = modelResult.rows[0];
+    if (!model) return res.status(404).json({ error: "Modèle personnalisé introuvable." });
+
+    const newData = compactCustomModelData(model.data || {});
+    newData.source = "custom_model";
+    newData.customModelId = model.id;
+    newData.custom_model_id = model.id;
+    newData.title = model.title || newData.title || "Autodiagnostic personnalisé";
+    newData.subject = model.subject || newData.subject || "Personnalisé";
+    newData.theme = model.subject || newData.theme || "Personnalisé";
+    newData.audience = model.audience || newData.audience || "Collaborateurs";
+    newData.objective = model.description || newData.objective || "";
+
+    const result = await pool.query(
+      `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step)
+       VALUES ($1, $2, 'draft', $3::jsonb, $1, $4, 'questions')
+       RETURNING *`,
+      [req.user.id, newData.title, JSON.stringify(newData), model.organization_id || null]
+    );
+
+    res.json({ project: result.rows[0] });
+  } catch (err) {
+    console.error("POST /api/custom-models/:id/use", err);
+    res.status(500).json({ error: "Erreur création depuis le modèle personnalisé." });
   }
 });
 
