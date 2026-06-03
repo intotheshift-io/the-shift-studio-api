@@ -1413,114 +1413,6 @@ async function sendCommunicationAssetsEmail(projectId) {
 }
 
 
-async function getCommunicationProjectEmailRow(projectId) {
-  const result = await pool.query(`
-    SELECT
-      p.id,
-      p.title,
-      p.data,
-      p.share_url,
-      p.results_url,
-      p.campaign_start_date,
-      p.campaign_end_date,
-      o.name AS organization_name,
-      o.contact_email,
-      o.contact_name,
-      client.email AS user_email,
-      client.first_name AS user_first_name,
-      client.last_name AS user_last_name,
-      client.company_name AS user_company_name,
-      partner.email AS partner_email
-    FROM projects p
-    LEFT JOIN users client ON client.id = p.user_id
-    LEFT JOIN organizations o ON o.id = p.organization_id
-    LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
-    WHERE p.id = $1
-    LIMIT 1
-  `, [projectId]);
-
-  return result.rows[0] || null;
-}
-
-function buildCommunicationLinksEmail({ row, recipient }) {
-  const title = extractProjectDisplayTitle(row.data || {}, row.title || 'votre autodiagnostic');
-  const kitUrl = buildProtectedFrontendUrl(`/kit-communication.html?projectId=${encodeURIComponent(row.id)}`);
-  const hello = recipient.name || '';
-  const shareUrl = row.share_url || '';
-  const resultsUrl = row.results_url || '';
-
-  return {
-    subject: `Liens de campagne mis à jour — ${title}`,
-    text:
-`Bonjour ${hello},
-
-Les liens de campagne de votre autodiagnostic "${title}" ont été mis à jour.
-
-Merci d’utiliser désormais les nouveaux liens disponibles dans votre espace Shift Studio.
-
-Éléments concernés :
-- lien de passation : ${shareUrl || "—"}
-- lien résultats : ${resultsUrl || "—"}
-- QR code associé.
-
-Accéder au kit de communication :
-${kitUrl}
-
-L’équipe Into The Shift`,
-    html:
-`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
-  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
-    <p>Bonjour ${escapeHtml(hello)},</p>
-    <p>Les liens de campagne de votre autodiagnostic <strong>${escapeHtml(title)}</strong> ont été mis à jour.</p>
-    <p>Merci d’utiliser désormais les nouveaux liens disponibles dans votre espace <strong>Shift Studio</strong>.</p>
-    <div style="background:#eef6fb;border:1px solid #d7e8f1;border-radius:14px;padding:16px;margin:18px 0">
-      <p style="margin:0"><strong>Éléments concernés :</strong><br>
-      lien de passation${shareUrl ? ` : <a href="${escapeHtml(shareUrl)}">${escapeHtml(shareUrl)}</a>` : ""}<br>
-      lien résultats${resultsUrl ? ` : <a href="${escapeHtml(resultsUrl)}">${escapeHtml(resultsUrl)}</a>` : ""}<br>
-      QR code associé.</p>
-    </div>
-    <p style="margin:22px 0 10px"><a href="${escapeHtml(kitUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au kit de communication</a></p>
-    <p>L’équipe Into The Shift</p>
-  </div>
-</div>`
-  };
-}
-
-async function sendCommunicationLinksUpdatedEmail(projectId) {
-  const row = await getCommunicationProjectEmailRow(projectId);
-  if (!row) return { sent: false, reason: 'PROJECT_NOT_FOUND' };
-  if (!row.share_url && !row.results_url) return { sent: false, reason: 'NO_LINKS' };
-
-  const recipient = getCommunicationRecipient(row);
-  if (!recipient.to) return { sent: false, reason: 'NO_RECIPIENT' };
-
-  const mail = buildCommunicationLinksEmail({ row, recipient });
-  const mailResult = await sendTransactionalEmail({
-    to: recipient.to,
-    cc: recipient.cc || undefined,
-    subject: mail.subject,
-    text: mail.text,
-    html: mail.html
-  });
-
-  if (mailResult.sent) {
-    await createClientNotificationForProject(projectId, {
-      type: "links",
-      title: "Liens de campagne mis à jour",
-      message: `Les liens de campagne de votre autodiagnostic « ${extractProjectDisplayTitle(row.data || {}, row.title || "votre autodiagnostic")} » ont été mis à jour.`,
-      actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(projectId)}`,
-      metadata: { email: "communication_links_updated" }
-    });
-  }
-
-  return {
-    ...mailResult,
-    to: recipient.to,
-    cc: recipient.cc || ''
-  };
-}
-
-
 function normalizeNotificationAudience(value = "client") {
   const audience = String(value || "client").toLowerCase();
   return ["admin", "client", "partner"].includes(audience) ? audience : "client";
@@ -1709,7 +1601,7 @@ function formatNotification(row = {}) {
 }
 
 const campaignAlerts = createCampaignAlerts({ pool, sendTransactionalEmail, createNotification });
-const { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendProjectPublicationEmail, sendTransmissionEmails, sendExtensionEmails, sendReprogrammingEmails } = campaignAlerts;
+const { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendProjectPublicationEmail, sendTransmissionEmails, sendExtensionEmails, sendReprogrammingEmails, sendCommunicationLinksUpdatedEmail, sendRespondentTitleUpdatedAdminAlert } = campaignAlerts;
 
 const packAlerts = createPackAlerts({
   pool,
@@ -2749,6 +2641,19 @@ app.patch("/api/projects/:id/respondent-title", auth, async (req, res) => {
     );
 
     const project = updateResult.rows[0];
+
+    if (String(req.user.role || "").toLowerCase() !== "admin" && typeof sendRespondentTitleUpdatedAdminAlert === "function") {
+      try {
+        await sendRespondentTitleUpdatedAdminAlert(projectId, {
+          previousTitle: extractProjectDisplayTitle(currentProject.data || {}, currentProject.title || ""),
+          newTitle: respondentTitle,
+          updatedBy: req.user.email || ""
+        });
+      } catch (alertErr) {
+        console.error("Erreur alerte admin modification titre répondants", alertErr);
+      }
+    }
+
     res.json({
       ok: true,
       project: {
@@ -4896,7 +4801,24 @@ app.patch("/api/admin/projects/:id/publication", auth, requireAdmin, async (req,
       }
     }
 
-    res.json({ ok: true, project: result.rows[0], publicationEmail, statusNotification, extensionValidationNotification });
+    let communicationLinksNotification = { sent: false, reason: "NOT_TRIGGERED" };
+    const shareUrlChanged = Boolean(existing.share_url) && nextShareUrl && nextShareUrl !== existing.share_url;
+    const resultsUrlChanged = Boolean(existing.results_url) && nextResultsUrl && nextResultsUrl !== existing.results_url;
+    if ((shareUrlChanged || resultsUrlChanged) && typeof sendCommunicationLinksUpdatedEmail === "function") {
+      try {
+        communicationLinksNotification = await sendCommunicationLinksUpdatedEmail(id, {
+          previousShareUrl: existing.share_url || "",
+          previousResultsUrl: existing.results_url || "",
+          newShareUrl: nextShareUrl || "",
+          newResultsUrl: nextResultsUrl || ""
+        });
+      } catch (linksErr) {
+        console.error("Erreur notification liens de communication", linksErr);
+        communicationLinksNotification = { sent: false, reason: "SEND_FAILED" };
+      }
+    }
+
+    res.json({ ok: true, project: result.rows[0], publicationEmail, statusNotification, extensionValidationNotification, communicationLinksNotification });
   } catch (err) {
     console.error("Erreur publication projet", err);
     res.status(500).json({ error: "Erreur publication projet" });
