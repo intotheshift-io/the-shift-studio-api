@@ -786,22 +786,37 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
     });
   }
 
+  const effectiveCampaignEndDateSql = `
+    COALESCE(
+      CASE WHEN p.data->>'campaignEndDate' ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN (p.data->>'campaignEndDate')::date END,
+      CASE WHEN p.data->>'campaign_end_date' ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN (p.data->>'campaign_end_date')::date END,
+      CASE WHEN p.data->>'endDate' ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN (p.data->>'endDate')::date END,
+      CASE WHEN p.data->>'end_date' ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN (p.data->>'end_date')::date END,
+      CASE WHEN p.data->'parametrage'->>'date_cloture' ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN (p.data->'parametrage'->>'date_cloture')::date END,
+      CASE WHEN p.data->'parametrage'->>'dateCloture' ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN (p.data->'parametrage'->>'dateCloture')::date END,
+      CASE WHEN p.data->'payload'->>'campaignEndDate' ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN (p.data->'payload'->>'campaignEndDate')::date END,
+      CASE WHEN p.data->'payload'->>'campaign_end_date' ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN (p.data->'payload'->>'campaign_end_date')::date END,
+      CASE WHEN p.data->'payload'->'parametrage'->>'date_cloture' ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN (p.data->'payload'->'parametrage'->>'date_cloture')::date END,
+      p.campaign_end_date
+    )
+  `;
+
   async function autoUnpublishExpiredProjects() {
     await pool.query(`
-      UPDATE projects
+      UPDATE projects p
       SET status = 'unpublished',
           unpublished_at = COALESCE(unpublished_at, NOW()),
           updated_at = NOW()
-      WHERE status = 'published'
-        AND campaign_end_date IS NOT NULL
-        AND campaign_end_date < CURRENT_DATE
+      WHERE p.status = 'published'
+        AND ${effectiveCampaignEndDateSql} IS NOT NULL
+        AND ${effectiveCampaignEndDateSql} < CURRENT_DATE
     `);
   }
 
   async function getCampaignAlertRows({ type, daysBefore }) {
     if (type === "unpublished") {
       return pool.query(`
-        SELECT p.id, p.user_id, p.organization_id, p.title, p.data, p.campaign_end_date, p.results_url, p.share_url,
+        SELECT p.id, p.user_id, p.organization_id, p.title, p.data, ${effectiveCampaignEndDateSql} AS campaign_end_date, p.results_url, p.share_url,
           o.name AS organization_name, o.contact_email, o.contact_name,
           client.email AS user_email, client.first_name AS user_first_name, client.last_name AS user_last_name, client.company_name AS user_company_name,
           partner.email AS partner_email, partner.first_name AS partner_first_name, partner.last_name AS partner_last_name, partner.company_name AS partner_company_name
@@ -810,15 +825,16 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
         LEFT JOIN organizations o ON o.id = p.organization_id
         LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
         WHERE p.status = 'unpublished'
-          AND p.campaign_end_date IS NOT NULL
+          AND ${effectiveCampaignEndDateSql} IS NOT NULL
+          AND ${effectiveCampaignEndDateSql} < CURRENT_DATE
           AND p.unpublished_alert_sent_at IS NULL
-        ORDER BY p.campaign_end_date ASC
+        ORDER BY campaign_end_date ASC
       `);
     }
 
     const sentColumn = Number(daysBefore) === 2 ? "end_alert_2_sent_at" : "end_alert_7_sent_at";
     return pool.query(`
-      SELECT p.id, p.user_id, p.organization_id, p.title, p.data, p.campaign_end_date, p.results_url, p.share_url,
+      SELECT p.id, p.user_id, p.organization_id, p.title, p.data, ${effectiveCampaignEndDateSql} AS campaign_end_date, p.results_url, p.share_url,
         o.name AS organization_name, o.contact_email, o.contact_name,
         client.email AS user_email, client.first_name AS user_first_name, client.last_name AS user_last_name, client.company_name AS user_company_name,
         partner.email AS partner_email, partner.first_name AS partner_first_name, partner.last_name AS partner_last_name, partner.company_name AS partner_company_name
@@ -827,10 +843,10 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
       LEFT JOIN organizations o ON o.id = p.organization_id
       LEFT JOIN users partner ON partner.id = o.created_by AND partner.role = 'partner'
       WHERE p.status = 'published'
-        AND p.campaign_end_date IS NOT NULL
+        AND ${effectiveCampaignEndDateSql} IS NOT NULL
         AND p.${sentColumn} IS NULL
-        AND p.campaign_end_date = CURRENT_DATE + ($1 || ' days')::interval
-      ORDER BY p.campaign_end_date ASC
+        AND ${effectiveCampaignEndDateSql} = CURRENT_DATE + ($1 || ' days')::interval
+      ORDER BY campaign_end_date ASC
     `, [daysBefore]);
   }
 

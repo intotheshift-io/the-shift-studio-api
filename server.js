@@ -5710,22 +5710,48 @@ async function enrichTransmissionPayloadForNotifications(req) {
 }
 
 async function markProjectAsSentFromTransmission(req, options = {}) {
-  const projectId = extractProjectIdFromTransmissionBody(req.body || {});
+  const body = req.body || {};
+  const payload = body.payload && typeof body.payload === "object" ? body.payload : {};
+  const projectId = extractProjectIdFromTransmissionBody(body);
   if (!projectId) return null;
 
   const isExtensionTransmission = options.isExtensionTransmission === true;
   const isReprogrammingTransmission = options.isReprogrammingTransmission === true;
   const isCampaignUpdateTransmission = isExtensionTransmission || isReprogrammingTransmission;
 
+  const transmittedStartDate = normalizeDateValue(
+    body.newStartDate || body.campaignStartDate || body.campaign_start_date || body.startDate || body.start_date ||
+    payload.newStartDate || payload.campaignStartDate || payload.campaign_start_date || payload.date_lancement || payload.startDate || payload.start_date ||
+    ""
+  );
+
+  const transmittedEndDate = normalizeDateValue(
+    body.newEndDate || body.campaignEndDate || body.campaign_end_date || body.endDate || body.end_date ||
+    payload.newEndDate || payload.campaignEndDate || payload.campaign_end_date || payload.date_cloture || payload.endDate || payload.end_date ||
+    ""
+  );
+
+  const shouldUpdateStartDate = isReprogrammingTransmission && Boolean(transmittedStartDate);
+  const shouldUpdateEndDate = isCampaignUpdateTransmission && Boolean(transmittedEndDate);
+
   const result = await pool.query(
     `UPDATE projects
      SET status = CASE WHEN $3::boolean THEN status ELSE 'sent' END,
-         data = COALESCE(data, '{}'::jsonb) || jsonb_build_object(
+         campaign_start_date = CASE WHEN $6::boolean THEN $8::date ELSE campaign_start_date END,
+         campaign_end_date = CASE WHEN $7::boolean THEN $9::date ELSE campaign_end_date END,
+         unpublished_alert_sent_at = CASE WHEN $7::boolean THEN NULL ELSE unpublished_alert_sent_at END,
+         end_alert_7_sent_at = CASE WHEN $7::boolean THEN NULL ELSE end_alert_7_sent_at END,
+         end_alert_2_sent_at = CASE WHEN $7::boolean THEN NULL ELSE end_alert_2_sent_at END,
+         data = COALESCE(data, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object(
            'configTransmise', true,
            'config_transmise', true,
            'submitted', true,
            'submitted_at', NOW(),
            'status', CASE WHEN $3::boolean THEN status ELSE 'sent' END,
+           'campaignStartDate', CASE WHEN $6::boolean THEN $8::text ELSE NULL END,
+           'campaign_start_date', CASE WHEN $6::boolean THEN $8::text ELSE NULL END,
+           'campaignEndDate', CASE WHEN $7::boolean THEN $9::text ELSE NULL END,
+           'campaign_end_date', CASE WHEN $7::boolean THEN $9::text ELSE NULL END,
            'extended', COALESCE((data->>'extended')::boolean, false) OR $4::boolean,
            'isExtended', COALESCE((data->>'isExtended')::boolean, false) OR $4::boolean,
            'extended_at', CASE WHEN $4::boolean THEN NOW() ELSE data->>'extended_at' END,
@@ -5736,7 +5762,7 @@ async function markProjectAsSentFromTransmission(req, options = {}) {
            'reprogrammed_at', CASE WHEN $5::boolean THEN NOW() ELSE data->>'reprogrammed_at' END,
            'campaign_reprogrammed_at', CASE WHEN $5::boolean THEN NOW() ELSE data->>'campaign_reprogrammed_at' END,
            'transmissionType', CASE WHEN $5::boolean THEN 'reprogramming' WHEN $4::boolean THEN 'extension' ELSE COALESCE(data->>'transmissionType', 'standard') END
-         ),
+         )),
          current_step = 'validation',
          updated_at = NOW()
      WHERE id = $1
@@ -5746,8 +5772,18 @@ async function markProjectAsSentFromTransmission(req, options = {}) {
          OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $2)
          OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
        )
-     RETURNING id, status`,
-    [projectId, req.user.id, isCampaignUpdateTransmission, isExtensionTransmission, isReprogrammingTransmission]
+     RETURNING id, status, campaign_start_date, campaign_end_date`,
+    [
+      projectId,
+      req.user.id,
+      isCampaignUpdateTransmission,
+      isExtensionTransmission,
+      isReprogrammingTransmission,
+      shouldUpdateStartDate,
+      shouldUpdateEndDate,
+      transmittedStartDate,
+      transmittedEndDate
+    ]
   );
 
   return result.rows[0] || null;
