@@ -5267,6 +5267,48 @@ app.delete("/api/admin/communication-assets/:assetId", auth, requireAdmin, async
   }
 });
 
+app.delete("/api/projects/:projectId/communication-assets/:assetId", auth, async (req, res) => {
+  const { projectId, assetId } = req.params;
+
+  try {
+    const project = await getProjectForCommunicationAccess(projectId, req.user);
+    if (!project) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const existing = await pool.query(
+      `SELECT project_id
+       FROM project_communication_assets
+       WHERE id = $1
+         AND project_id = $2
+       LIMIT 1`,
+      [assetId, projectId]
+    );
+
+    if (!existing.rows[0]) {
+      return res.status(404).json({ error: "Ressource introuvable" });
+    }
+
+    await pool.query(
+      `DELETE FROM project_communication_assets
+       WHERE id = $1`,
+      [assetId]
+    );
+
+    await pool.query(
+      `UPDATE projects
+       SET updated_at = NOW()
+       WHERE id = $1`,
+      [projectId]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /api/projects/:projectId/communication-assets/:assetId", err);
+    res.status(500).json({ error: "Erreur suppression ressource de communication." });
+  }
+});
+
 
 
 app.patch("/api/projects/:id/communication-notes", auth, async (req, res) => {
