@@ -683,6 +683,38 @@ function getCommunicationLinksRecipient(row) {
   };
 }
 
+
+function buildCommunicationVideoEmail({ row, recipient }) {
+  const title = extractProjectDisplayTitle(row.data || {}, row.title || "votre autodiagnostic");
+  const kitUrl = buildProtectedFrontendUrl(`/kit-communication.html?projectId=${encodeURIComponent(row.id)}`);
+  const hello = recipient.name || "";
+
+  return {
+    subject: `Votre vidéo est disponible — ${title}`,
+    text:
+`Bonjour ${hello},
+
+Une vidéo a été ajoutée dans votre kit de communication.
+
+Vous pouvez la télécharger depuis votre espace Shift Studio.
+
+Accéder au kit de communication :
+${kitUrl}
+
+L’équipe Into The Shift`,
+    html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.55;background:#f3f6f8;padding:24px">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
+    <p>Bonjour ${escapeHtml(hello)},</p>
+    <p>Une vidéo a été ajoutée dans votre kit de communication.</p>
+    <p>Vous pouvez la télécharger depuis votre espace <strong>Shift Studio</strong>.</p>
+    <p style="margin:22px 0 10px"><a href="${escapeHtml(kitUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Accéder au kit de communication</a></p>
+    <p>L’équipe Into The Shift</p>
+  </div>
+</div>`
+  };
+}
+
 function buildCommunicationLinksEmail({ row, recipient, previousShareUrl = "", previousResultsUrl = "", newShareUrl = "", newResultsUrl = "" }) {
   const title = extractProjectDisplayTitle(row.data || {}, row.title || "votre autodiagnostic");
   const kitUrl = buildProtectedFrontendUrl(`/kit-communication.html?projectId=${encodeURIComponent(row.id)}`);
@@ -1339,6 +1371,46 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
     return result.rows[0] || null;
   }
 
+
+  async function sendCommunicationVideoAvailableEmail(projectId) {
+    const row = await getProjectCommunicationRow(projectId);
+    if (!row) return { sent: false, reason: "PROJECT_NOT_FOUND" };
+
+    const communication = row.data && typeof row.data === "object" && row.data.communication && typeof row.data.communication === "object"
+      ? row.data.communication
+      : {};
+    const videoUrl = String(communication.videoDownloadUrl || communication.video_download_url || "").trim();
+    if (!videoUrl) return { sent: false, reason: "NO_VIDEO" };
+
+    const recipient = getCommunicationLinksRecipient(row);
+    if (!recipient.to) return { sent: false, reason: "NO_RECIPIENT" };
+
+    const mail = buildCommunicationVideoEmail({ row, recipient });
+    const mailResult = await sendTransactionalEmail({
+      to: recipient.to,
+      cc: recipient.cc || undefined,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html
+    });
+
+    if (mailResult.sent && typeof createNotification === "function") {
+      await createNotification({
+        audience: "client",
+        userId: row.user_id || null,
+        organizationId: row.organization_id || null,
+        projectId: row.id,
+        type: "communication_video",
+        title: "Vidéo disponible",
+        message: "Une vidéo a été ajoutée dans votre kit de communication.",
+        actionUrl: `/kit-communication.html?projectId=${encodeURIComponent(row.id)}`,
+        metadata: { email: "communication_video_available" }
+      });
+    }
+
+    return { ...mailResult, to: recipient.to, cc: recipient.cc || "" };
+  }
+
   async function sendCommunicationLinksUpdatedEmail(projectId, options = {}) {
     const row = await getProjectCommunicationRow(projectId);
     if (!row) return { sent: false, reason: "PROJECT_NOT_FOUND" };
@@ -1477,6 +1549,6 @@ export function createCampaignAlerts({ pool, sendTransactionalEmail, createNotif
     };
   }
 
-  return { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendProjectPublicationEmail, sendTransmissionEmails, sendExtensionEmails, sendReprogrammingEmails, sendCommunicationLinksUpdatedEmail, sendRespondentTitleUpdatedAdminAlert };
+  return { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendProjectPublicationEmail, sendTransmissionEmails, sendExtensionEmails, sendReprogrammingEmails, sendCommunicationLinksUpdatedEmail, sendCommunicationVideoAvailableEmail, sendRespondentTitleUpdatedAdminAlert };
 }
 

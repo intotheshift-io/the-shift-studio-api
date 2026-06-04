@@ -1639,7 +1639,7 @@ function formatNotification(row = {}) {
 }
 
 const campaignAlerts = createCampaignAlerts({ pool, sendTransactionalEmail, createNotification });
-const { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendProjectPublicationEmail, sendTransmissionEmails, sendExtensionEmails, sendReprogrammingEmails, sendCommunicationLinksUpdatedEmail, sendRespondentTitleUpdatedAdminAlert } = campaignAlerts;
+const { autoUnpublishExpiredProjects, processCampaignAlerts, runCampaignAlerts, sendProjectPublicationEmail, sendTransmissionEmails, sendExtensionEmails, sendReprogrammingEmails, sendCommunicationLinksUpdatedEmail, sendCommunicationVideoAvailableEmail, sendRespondentTitleUpdatedAdminAlert } = campaignAlerts;
 
 const packAlerts = createPackAlerts({
   pool,
@@ -5386,6 +5386,43 @@ app.patch("/api/admin/projects/:id/communication-video", auth, requireAdmin, asy
   } catch (err) {
     console.error("PATCH /api/admin/projects/:id/communication-video", err);
     res.status(500).json({ error: "Erreur enregistrement lien vidéo." });
+  }
+});
+
+
+app.post("/api/admin/projects/:id/communication-video/notify", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const project = await getProjectForCommunicationAccess(id, req.user);
+    if (!project) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const currentData = project.data && typeof project.data === "object" ? project.data : {};
+    const communication = currentData.communication && typeof currentData.communication === "object" ? currentData.communication : {};
+    const videoUrl = String(communication.videoDownloadUrl || communication.video_download_url || "").trim();
+
+    if (!videoUrl) {
+      return res.status(400).json({ error: "Aucun lien vidéo n’est renseigné pour ce projet." });
+    }
+
+    if (typeof sendCommunicationVideoAvailableEmail !== "function") {
+      return res.status(500).json({ error: "Notification vidéo indisponible." });
+    }
+
+    const mailResult = await sendCommunicationVideoAvailableEmail(id);
+
+    res.json({
+      ok: mailResult.sent,
+      emailSent: mailResult.sent,
+      emailStatus: mailResult.reason || "SENT",
+      to: mailResult.to || "",
+      cc: mailResult.cc || ""
+    });
+  } catch (err) {
+    console.error("POST /api/admin/projects/:id/communication-video/notify", err);
+    res.status(500).json({ error: "Erreur notification vidéo de communication." });
   }
 });
 
