@@ -5604,12 +5604,6 @@ app.patch("/api/projects/:id/passation-logo", auth, async (req, res) => {
       UPDATE projects p
       SET passation_logo_name = $1,
           passation_logo_data_url = $2,
-          data = COALESCE(p.data, '{}'::jsonb) || jsonb_build_object(
-            'passationLogoName', $1,
-            'passationLogoDataUrl', $2,
-            'passation_logo_name', $1,
-            'passation_logo_data_url', $2
-          ),
           updated_at = NOW()
       FROM organizations o
       WHERE p.id = $3
@@ -5644,12 +5638,6 @@ app.patch("/api/admin/projects/:id/passation-logo", auth, requireAdmin, async (r
       UPDATE projects
       SET passation_logo_name = $1,
           passation_logo_data_url = $2,
-          data = COALESCE(data, '{}'::jsonb) || jsonb_build_object(
-            'passationLogoName', $1,
-            'passationLogoDataUrl', $2,
-            'passation_logo_name', $1,
-            'passation_logo_data_url', $2
-          ),
           updated_at = NOW()
       WHERE id = $3
       RETURNING *
