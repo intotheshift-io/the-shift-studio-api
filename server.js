@@ -5268,6 +5268,70 @@ app.delete("/api/admin/communication-assets/:assetId", auth, requireAdmin, async
 });
 
 
+
+app.patch("/api/projects/:id/communication-notes", auth, async (req, res) => {
+  const { id } = req.params;
+  const clientBrandComment = String(req.body?.clientBrandComment || req.body?.client_brand_comment || "").trim();
+  const adminDeliveryComment = String(req.body?.adminDeliveryComment || req.body?.admin_delivery_comment || "").trim();
+  const isAdminUser = String(req.user?.role || "").toLowerCase() === "admin";
+
+  if (clientBrandComment.length > 1200) {
+    return res.status(400).json({ error: "Commentaire client trop long. 1200 caractères maximum." });
+  }
+
+  if (adminDeliveryComment.length > 1200) {
+    return res.status(400).json({ error: "Commentaire de livraison trop long. 1200 caractères maximum." });
+  }
+
+  try {
+    const project = await getProjectForCommunicationAccess(id, req.user);
+    if (!project) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const currentData = project.data && typeof project.data === "object" ? project.data : {};
+    const currentCommunication = currentData.communication && typeof currentData.communication === "object" ? currentData.communication : {};
+    const now = new Date().toISOString();
+    const nextCommunication = { ...currentCommunication };
+
+    if (isAdminUser) {
+      nextCommunication.adminDeliveryComment = adminDeliveryComment;
+      nextCommunication.admin_delivery_comment = adminDeliveryComment;
+      nextCommunication.adminDeliveryCommentUpdatedAt = now;
+      nextCommunication.admin_delivery_comment_updated_at = now;
+    } else {
+      nextCommunication.clientBrandComment = clientBrandComment;
+      nextCommunication.client_brand_comment = clientBrandComment;
+      nextCommunication.clientBrandCommentUpdatedAt = now;
+      nextCommunication.client_brand_comment_updated_at = now;
+    }
+
+    const nextData = {
+      ...currentData,
+      communication: nextCommunication,
+      communicationKit: {
+        ...(currentData.communicationKit && typeof currentData.communicationKit === "object" ? currentData.communicationKit : {}),
+        clientBrandComment: nextCommunication.clientBrandComment || "",
+        adminDeliveryComment: nextCommunication.adminDeliveryComment || ""
+      }
+    };
+
+    const result = await pool.query(
+      `UPDATE projects
+       SET data = $1::jsonb,
+           updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [JSON.stringify(nextData), id]
+    );
+
+    res.json({ ok: true, project: result.rows[0] });
+  } catch (err) {
+    console.error("PATCH /api/projects/:id/communication-notes", err);
+    res.status(500).json({ error: "Erreur enregistrement commentaire." });
+  }
+});
+
 app.patch("/api/admin/projects/:id/communication-video", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
   const videoDownloadUrl = String(req.body?.videoDownloadUrl || req.body?.video_download_url || "").trim();
