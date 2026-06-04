@@ -5267,6 +5267,64 @@ app.delete("/api/admin/communication-assets/:assetId", auth, requireAdmin, async
   }
 });
 
+
+app.patch("/api/admin/projects/:id/communication-video", auth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const videoDownloadUrl = String(req.body?.videoDownloadUrl || req.body?.video_download_url || "").trim();
+  const videoDescription = String(req.body?.videoDescription || req.body?.video_description || "").trim();
+
+  if (videoDownloadUrl && !isValidHttpsUrl(videoDownloadUrl)) {
+    return res.status(400).json({ error: "Lien vidéo invalide. Utilisez une URL HTTPS." });
+  }
+
+  if (videoDescription.length > 800) {
+    return res.status(400).json({ error: "Texte vidéo trop long. 800 caractères maximum." });
+  }
+
+  try {
+    const project = await getProjectForCommunicationAccess(id, req.user);
+    if (!project) {
+      return res.status(404).json({ error: "Projet introuvable" });
+    }
+
+    const currentData = project.data && typeof project.data === "object" ? project.data : {};
+    const currentCommunication = currentData.communication && typeof currentData.communication === "object" ? currentData.communication : {};
+    const nextCommunication = {
+      ...currentCommunication,
+      videoDownloadUrl,
+      video_download_url: videoDownloadUrl,
+      videoDescription,
+      video_description: videoDescription,
+      videoUpdatedAt: new Date().toISOString(),
+      video_updated_at: new Date().toISOString()
+    };
+
+    const nextData = {
+      ...currentData,
+      communication: nextCommunication,
+      communicationKit: {
+        ...(currentData.communicationKit && typeof currentData.communicationKit === "object" ? currentData.communicationKit : {}),
+        videoDownloadUrl,
+        videoDescription
+      }
+    };
+
+    const result = await pool.query(
+      `UPDATE projects
+       SET data = $1::jsonb,
+           updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [JSON.stringify(nextData), id]
+    );
+
+    res.json({ ok: true, project: result.rows[0] });
+  } catch (err) {
+    console.error("PATCH /api/admin/projects/:id/communication-video", err);
+    res.status(500).json({ error: "Erreur enregistrement lien vidéo." });
+  }
+});
+
 app.post("/api/admin/projects/:id/communication-assets/notify", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
 
