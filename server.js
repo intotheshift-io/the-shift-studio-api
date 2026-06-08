@@ -3820,24 +3820,6 @@ app.get("/api/admin/organizations/:id/users", auth, requireAdmin, async (req, re
 });
 
 
-app.post("/api/admin/users/purge-deleted", auth, requireAdmin, async (req, res) => {
-  try {
-    const result = await pool.query(
-      `DELETE FROM users
-       WHERE status = 'deleted'
-       RETURNING id, email`
-    );
-
-    res.json({
-      ok: true,
-      purged: result.rowCount || 0,
-      users: result.rows || []
-    });
-  } catch (err) {
-    console.error("POST /api/admin/users/purge-deleted", err);
-    res.status(500).json({ error: "Erreur purge comptes supprimés." });
-  }
-});
 
 app.patch("/api/admin/users/:id/passations", auth, requireAdmin, async (req, res) => {
   const { id } = req.params;
