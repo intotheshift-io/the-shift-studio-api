@@ -3940,6 +3940,21 @@ app.patch("/api/admin/users/:id/status", auth, requireAdmin, async (req, res) =>
       return res.status(403).json({ error: "Par sécurité, un compte admin ne peut pas être désactivé ou supprimé depuis cette interface" });
     }
 
+    if (safeStatus === "deleted") {
+      const deleted = await pool.query(
+        `DELETE FROM users
+         WHERE id = $1
+         RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
+        [id]
+      );
+
+      return res.json({
+        ok: true,
+        hardDeleted: true,
+        user: formatUser({ ...deleted.rows[0], status: "deleted" })
+      });
+    }
+
     const result = await pool.query(
       `UPDATE users
        SET status = $1
