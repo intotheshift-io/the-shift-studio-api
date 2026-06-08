@@ -1958,9 +1958,7 @@ Création gratuite + 15 passations offertes : les 15 passations sont offertes lo
 
 Aucun devis n’est envoyé tant que vous ne transmettez pas à Into The Shift une configuration pour diffusion.
 
-Compte professionnel uniquement : l’inscription est réservée aux adresses email professionnelles. Les adresses personnelles ne sont pas autorisées.
-
-Les comptes n’ayant créé aucun autodiagnostic ou sans activité pendant plus de 90 jours pourront être supprimés automatiquement.
+Gestion des comptes : Les comptes n’ayant créé aucun autodiagnostic ou sans activité pendant plus de 90 jours pourront être supprimés automatiquement.
 
 L’équipe Into The Shift`,
       html:
