@@ -1956,11 +1956,11 @@ ${loginUrl}
 
 Création gratuite + 15 passations offertes : les 15 passations sont offertes lors de la transmission de votre premier autodiagnostic à Into The Shift.
 
-L’inscription est réservée aux usages professionnels avec une adresse email professionnelle. Les adresses personnelles ne sont pas autorisées.
+Aucun devis n’est envoyé tant que vous ne transmettez pas à Into The Shift une configuration pour diffusion.
+
+Compte professionnel uniquement : l’inscription est réservée aux adresses email professionnelles. Les adresses personnelles ne sont pas autorisées.
 
 Les comptes n’ayant créé aucun autodiagnostic ou sans activité pendant plus de 90 jours pourront être supprimés automatiquement.
-
-Aucun devis n’est envoyé tant que vous ne transmettez pas à Into The Shift une configuration pour diffusion.
 
 L’équipe Into The Shift`,
       html:
@@ -1969,10 +1969,15 @@ L’équipe Into The Shift`,
     <p>Bonjour ${escapeHtml(firstName || "")},</p>
     <p>Votre compte <strong>Shift Studio</strong> a bien été créé.</p>
     <p><a href="${escapeHtml(loginUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:8px;text-decoration:none;font-weight:bold">Accéder à mon espace découverte</a></p>
-    <p><strong>Création gratuite + 15 passations offertes :</strong> les 15 passations sont offertes lors de la transmission de votre premier autodiagnostic à Into The Shift.</p>
-    <p><strong>Adresse email professionnelle obligatoire :</strong> les adresses personnelles ne sont pas autorisées.</p>
-    <p>Les comptes n’ayant créé aucun autodiagnostic ou sans activité pendant plus de 90 jours pourront être supprimés automatiquement.</p>
-    <p>Aucun devis n’est envoyé tant que vous ne transmettez pas à Into The Shift une configuration pour diffusion.</p>
+    <div style="background:#fff7df;border:1px solid #ffc866;border-left:6px solid #ffc000;border-radius:12px;padding:14px;margin:18px 0">
+      <p style="margin:0 0 8px"><strong>Création gratuite + 15 passations offertes</strong></p>
+      <p style="margin:0">Les 15 passations sont offertes lors de la transmission de votre premier autodiagnostic à Into The Shift. Aucun devis n’est envoyé tant que vous ne transmettez pas une configuration pour diffusion.</p>
+    </div>
+    <div style="background:#eef6fb;border:1px solid #cbddea;border-left:6px solid #0d4c72;border-radius:12px;padding:14px;margin:18px 0">
+      <p style="margin:0 0 8px"><strong>Compte professionnel uniquement</strong></p>
+      <p style="margin:0">L’inscription est réservée aux adresses email professionnelles. Les adresses personnelles ne sont pas autorisées.</p>
+      <p style="margin:8px 0 0">Les comptes n’ayant créé aucun autodiagnostic ou sans activité pendant plus de 90 jours pourront être supprimés automatiquement.</p>
+    </div>
     <p>L’équipe Into The Shift</p>
   </div>
 </div>`
