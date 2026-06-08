@@ -6053,8 +6053,7 @@ app.delete("/api/admin/users/:id", auth, requireAdmin, async (req, res) => {
     }
 
     const deletedUser = await pool.query(
-      `UPDATE users
-       SET status = 'deleted'
+      `DELETE FROM users
        WHERE id = $1
        RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
       [id]
@@ -6062,7 +6061,8 @@ app.delete("/api/admin/users/:id", auth, requireAdmin, async (req, res) => {
 
     res.json({
       ok: true,
-      deletedUser: formatUser(deletedUser.rows[0])
+      hardDeleted: true,
+      deletedUser: formatUser({ ...deletedUser.rows[0], status: "deleted" })
     });
   } catch (err) {
     console.error("Erreur suppression utilisateur", err);
