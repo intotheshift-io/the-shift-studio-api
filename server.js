@@ -1236,6 +1236,29 @@ function normalizeEmail(value = "") {
   return String(value || "").trim().toLowerCase();
 }
 
+
+const PERSONAL_EMAIL_DOMAINS = new Set([
+  "gmail.com", "googlemail.com",
+  "outlook.com", "outlook.fr", "hotmail.com", "hotmail.fr", "live.com", "live.fr", "msn.com",
+  "yahoo.com", "yahoo.fr", "ymail.com", "rocketmail.com",
+  "icloud.com", "me.com", "mac.com",
+  "orange.fr", "wanadoo.fr", "free.fr", "sfr.fr", "neuf.fr", "bbox.fr", "laposte.net",
+  "aol.com", "gmx.com", "gmx.fr", "mail.com", "mail.fr",
+  "proton.me", "protonmail.com", "pm.me",
+  "tutanota.com", "tuta.com", "zoho.com", "zohomail.com"
+]);
+
+function getEmailDomain(email = "") {
+  const normalized = normalizeEmail(email);
+  const parts = normalized.split("@");
+  return parts.length === 2 ? parts[1] : "";
+}
+
+function isPersonalEmail(email = "") {
+  const domain = getEmailDomain(email);
+  return Boolean(domain && PERSONAL_EMAIL_DOMAINS.has(domain));
+}
+
 function uniqueEmails(...values) {
   const seen = new Set();
   const emails = [];
@@ -1893,9 +1916,16 @@ app.get("/debug-version", (req, res) => {
 
 app.post("/api/register", async (req, res) => {
   const { email, password, firstName, lastName, companyName, jobTitle, sector } = req.body;
+  const normalizedEmail = normalizeEmail(email);
 
-  if (!email || !password) {
+  if (!normalizedEmail || !password) {
     return res.status(400).json({ error: "Email et mot de passe requis" });
+  }
+
+  if (isPersonalEmail(normalizedEmail)) {
+    return res.status(400).json({
+      error: "Merci d’utiliser une adresse email professionnelle. Les adresses personnelles ne sont pas autorisées sur Into The Shift."
+    });
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
@@ -1905,7 +1935,7 @@ app.post("/api/register", async (req, res) => {
       `INSERT INTO users (email, password_hash, first_name, last_name, company_name, job_title, sector, role)
        VALUES ($1, $2, $3, $4, $5, $6, $7, 'client')
        RETURNING id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at`,
-      [email.toLowerCase(), passwordHash, firstName || "", lastName || "", companyName || "", jobTitle || "", sector || ""]
+      [normalizedEmail, passwordHash, firstName || "", lastName || "", companyName || "", jobTitle || "", sector || ""]
     );
 
     const user = userResult.rows[0];
