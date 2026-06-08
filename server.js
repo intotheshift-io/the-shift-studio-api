@@ -1918,8 +1918,16 @@ app.post("/api/register", async (req, res) => {
   const { email, password, firstName, lastName, companyName, jobTitle, sector } = req.body;
   const normalizedEmail = normalizeEmail(email);
 
-  if (!normalizedEmail || !password) {
-    return res.status(400).json({ error: "Email et mot de passe requis" });
+  if (
+    !String(firstName || "").trim() ||
+    !String(lastName || "").trim() ||
+    !normalizedEmail ||
+    !String(companyName || "").trim() ||
+    !String(jobTitle || "").trim() ||
+    !String(sector || "").trim() ||
+    !password
+  ) {
+    return res.status(400).json({ error: "Tous les champs sont obligatoires." });
   }
 
   if (isPersonalEmail(normalizedEmail)) {
