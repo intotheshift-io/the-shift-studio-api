@@ -1942,6 +1942,42 @@ app.post("/api/register", async (req, res) => {
 
     await ensureDirectClientOrganization(user.id);
 
+    const loginUrl = buildProtectedFrontendUrl('/account.html');
+    await sendTransactionalEmail({
+      to: user.email,
+      subject: "Bienvenue dans Shift Studio",
+      text:
+`Bonjour ${firstName || ""},
+
+Votre compte Shift Studio a bien été créé.
+
+Vous pouvez accéder à votre espace découverte ici :
+${loginUrl}
+
+Création gratuite + 15 passations offertes : les 15 passations sont offertes lors de la transmission de votre premier autodiagnostic à Into The Shift.
+
+L’inscription est réservée aux usages professionnels avec une adresse email professionnelle. Les adresses personnelles ne sont pas autorisées.
+
+Les comptes n’ayant créé aucun autodiagnostic ou sans activité pendant plus de 90 jours pourront être supprimés automatiquement.
+
+Aucun devis n’est envoyé tant que vous ne transmettez pas à Into The Shift une configuration pour diffusion.
+
+L’équipe Into The Shift`,
+      html:
+`<div style="font-family:Arial,sans-serif;color:#18375d;line-height:1.5;background:#f3f6f8;padding:24px">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #dfe8ef;border-radius:18px;padding:26px">
+    <p>Bonjour ${escapeHtml(firstName || "")},</p>
+    <p>Votre compte <strong>Shift Studio</strong> a bien été créé.</p>
+    <p><a href="${escapeHtml(loginUrl)}" style="display:inline-block;background:#0d4c72;color:#ffffff;padding:12px 18px;border-radius:8px;text-decoration:none;font-weight:bold">Accéder à mon espace découverte</a></p>
+    <p><strong>Création gratuite + 15 passations offertes :</strong> les 15 passations sont offertes lors de la transmission de votre premier autodiagnostic à Into The Shift.</p>
+    <p><strong>Adresse email professionnelle obligatoire :</strong> les adresses personnelles ne sont pas autorisées.</p>
+    <p>Les comptes n’ayant créé aucun autodiagnostic ou sans activité pendant plus de 90 jours pourront être supprimés automatiquement.</p>
+    <p>Aucun devis n’est envoyé tant que vous ne transmettez pas à Into The Shift une configuration pour diffusion.</p>
+    <p>L’équipe Into The Shift</p>
+  </div>
+</div>`
+    });
+
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role || "client" },
       JWT_SECRET,
