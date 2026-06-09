@@ -69,6 +69,12 @@ function formatUser(user) {
     passationsUsed: used,
     passationsRemaining: Math.max(0, quota - used),
     organizationId: user.organization_id || user.organizationId || null,
+    lastPage: user.last_page || "",
+    last_page: user.last_page || "",
+    lastActivityAt: user.last_activity_at || null,
+    last_activity_at: user.last_activity_at || null,
+    lastProjectId: user.last_project_id || null,
+    last_project_id: user.last_project_id || null,
     createdAt: user.created_at || null
   };
 }
@@ -296,6 +302,26 @@ async function initDb() {
   await pool.query(`
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS passation_logo_data_url TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS last_page TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMP;
+  `);
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS last_project_id INTEGER;
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_users_last_activity_at
+    ON users(last_activity_at DESC);
   `);
 
   await pool.query(`
@@ -1906,6 +1932,7 @@ app.get("/debug-version", (req, res) => {
     hasCampaignReprogrammingEmails: true,
     hasOrganizationUsersRoute: true,
     hasCustomCatalogueModels: true,
+    hasUserActivityTracking: true,
     smtpConfigured: mailerIsConfigured(),
     smtpHost: SMTP_HOST || null,
     smtpPort: SMTP_PORT || null,
@@ -2159,13 +2186,86 @@ app.post("/api/reset-password", async (req, res) => {
 
 app.get("/api/me", auth, async (req, res) => {
   const result = await pool.query(
-    `SELECT id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, created_at
+    `SELECT id, email, first_name, last_name, company_name, job_title, sector, organization_logo_name, organization_logo_data_url, profile_photo_name, profile_photo_data_url, passation_logo_name, passation_logo_data_url, role, status, must_change_password, passations_quota, passations_used, last_page, last_activity_at, last_project_id, created_at
      FROM users
      WHERE id = $1`,
     [req.user.id]
   );
 
   res.json({ user: formatUser(result.rows[0]) });
+});
+
+app.post("/api/users/activity", auth, async (req, res) => {
+  const allowedPages = new Set([
+    "dashboard",
+    "mes-autodiagnostics",
+    "questions",
+    "parametrage",
+    "campagne",
+    "validation",
+    "account",
+    "kit-communication",
+    "bibliotheque"
+  ]);
+
+  const rawPage = String(req.body?.page || "").trim().toLowerCase();
+  const page = rawPage
+    .replace(/\.html$/i, "")
+    .replace(/[^a-z0-9-]/g, "")
+    .slice(0, 80);
+
+  if (!page || !allowedPages.has(page)) {
+    return res.status(400).json({ error: "Page d’activité invalide." });
+  }
+
+  const rawProjectId = req.body?.projectId || req.body?.project_id || null;
+  const numericProjectId = Number(rawProjectId);
+  const projectId = Number.isInteger(numericProjectId) && numericProjectId > 0 ? numericProjectId : null;
+
+  try {
+    if (projectId) {
+      const accessResult = await pool.query(
+        `SELECT id
+         FROM projects
+         WHERE id = $1
+           AND (
+             user_id = $2
+             OR created_by = $2
+             OR EXISTS (SELECT 1 FROM organization_users ou WHERE ou.organization_id = projects.organization_id AND ou.user_id = $2)
+             OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.role = 'admin')
+           )
+         LIMIT 1`,
+        [projectId, req.user.id]
+      );
+
+      if (!accessResult.rows[0]) {
+        await pool.query(
+          `UPDATE users
+           SET last_page = $1,
+               last_activity_at = NOW(),
+               last_project_id = NULL
+           WHERE id = $2`,
+          [page, req.user.id]
+        );
+        return res.json({ ok: true, page, projectId: null, projectIgnored: true });
+      }
+    }
+
+    const result = await pool.query(
+      `UPDATE users
+       SET last_page = $1,
+           last_activity_at = NOW(),
+           last_project_id = $2
+       WHERE id = $3
+       RETURNING id, last_page, last_activity_at, last_project_id`,
+      [page, projectId, req.user.id]
+    );
+
+    res.json({ ok: true, activity: result.rows[0] || null });
+  } catch (err) {
+    console.error("POST /api/users/activity", err);
+    res.status(500).json({ error: "Erreur suivi activité utilisateur." });
+  }
 });
 
 
@@ -3671,6 +3771,9 @@ app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
       u.must_change_password,
       u.passations_quota,
       u.passations_used,
+      u.last_page,
+      u.last_activity_at,
+      u.last_project_id,
       u.created_at,
       COUNT(DISTINCT p.id)::int AS projects_count,
       MAX(p.updated_at) AS last_project_update,
@@ -3713,6 +3816,12 @@ app.get("/api/admin/clients", auth, requireAdmin, async (req, res) => {
         passationsQuota: quota,
         passationsUsed: used,
         passationsRemaining: Math.max(0, quota - used),
+        lastPage: row.last_page || "",
+        last_page: row.last_page || "",
+        lastActivityAt: row.last_activity_at || null,
+        last_activity_at: row.last_activity_at || null,
+        lastProjectId: row.last_project_id || null,
+        last_project_id: row.last_project_id || null,
         organizationId: row.organization_id || null,
         organizationName: row.organization_name || "",
         createdAt: row.created_at,
