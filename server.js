@@ -2813,6 +2813,15 @@ app.post("/api/custom-models", auth, async (req, res) => {
     const modelData = compactCustomModelData(data);
     const meta = extractCustomModelMeta(modelData, req.body || {});
 
+    const restrictedTopic = requestHasRestrictedMeAndYouTooTopic({ user: req.user, data: modelData || {}, title: meta.title || "" });
+    if (restrictedTopic.restricted) {
+      return res.status(403).json({
+        error: "Cette thématique relève du Catalogue Inclusion Expert Me&YouToo et n’est pas disponible en création autonome sur Into The Shift.",
+        code: "MEANDYOUTOO_RESTRICTED_TOPIC",
+        terms: restrictedTopic.terms
+      });
+    }
+
     let result;
     let updated = false;
 
@@ -2910,6 +2919,15 @@ app.post("/api/custom-models/:id/use", auth, async (req, res) => {
     newData.parametrage.titreRespondants = projectTitle;
     newData.parametrage.titre_visible_repondants = projectTitle;
     newData.parametrage.titreVisibleRepondants = projectTitle;
+
+    const restrictedTopic = requestHasRestrictedMeAndYouTooTopic({ user: req.user, data: newData || {}, title: projectTitle || "" });
+    if (restrictedTopic.restricted) {
+      return res.status(403).json({
+        error: "Ce modèle contient une thématique relevant du Catalogue Inclusion Expert Me&YouToo et ne peut pas être utilisé en création autonome.",
+        code: "MEANDYOUTOO_RESTRICTED_TOPIC",
+        terms: restrictedTopic.terms
+      });
+    }
 
     const result = await pool.query(
       `INSERT INTO projects (user_id, title, status, data, created_by, organization_id, current_step)
@@ -3599,6 +3617,15 @@ app.put("/api/projects/:id", auth, async (req, res) => {
 
   if (!finalStatus) {
     finalStatus = resolveIncomingProjectStatus(configSent ? "sent" : "draft", data || {}, req.body || {});
+  }
+
+  const restrictedTopic = requestHasRestrictedMeAndYouTooTopic({ user: req.user, data: data || {}, title: finalTitle || title || "" });
+  if (restrictedTopic.restricted) {
+    return res.status(403).json({
+      error: "Cette thématique relève du Catalogue Inclusion Expert Me&YouToo et n’est pas disponible en création autonome sur Into The Shift.",
+      code: "MEANDYOUTOO_RESTRICTED_TOPIC",
+      terms: restrictedTopic.terms
+    });
   }
 
   const normalizedData = data && typeof data === "object"
