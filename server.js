@@ -808,6 +808,66 @@ function extractProjectDisplayTitle(data = {}, fallbackTitle = "") {
 }
 
 
+const MEANDYOUTOO_RESTRICTED_TERMS = [
+  "diversité", "diversite", "inclusion", "discrimination", "discriminations",
+  "sexisme", "sexiste", "agissement sexiste", "harcèlement sexuel", "harcelement sexuel",
+  "violences sexistes", "violences sexuelles", "vss", "lgbt", "lgbtq", "lgbt+",
+  "handicap", "origine", "origines", "diversité des origines", "diversite des origines",
+  "religion", "religieuse", "religieux", "diversité religieuse", "diversite religieuse",
+  "égalité professionnelle", "egalite professionnelle", "management inclusif", "manager inclusif",
+  "collaborateur inclusif", "collègue inclusif", "collegue inclusif", "allié de la mixité",
+  "allie de la mixite", "mixité", "mixite", "micro-agression", "microagression",
+  "stéréotype", "stereotype", "stéréotypes", "stereotypes"
+];
+
+function normalizeRestrictedTopicText(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[’']/g, " ")
+    .replace(/[^a-z0-9+]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function collectRestrictedTopicText(data = {}, fallbackTitle = "") {
+  const d = data && typeof data === "object" ? data : {};
+  const payload = d.payload && typeof d.payload === "object" ? d.payload : {};
+  const state = d.state && typeof d.state === "object" ? d.state : {};
+  const param = getProjectParamData(d);
+  const fields = [
+    fallbackTitle,
+    d.title, d.autodiagTitle, d.subject, d.theme, d.themeLabel, d.objective, d.description,
+    payload.title, payload.autodiagTitle, payload.subject, payload.theme, payload.objective, payload.description,
+    state.title, state.autodiagTitle, state.subject, state.theme, state.objective, state.description,
+    param.nom, param.titre, param.titre_repondants, param.titreRespondants, param.desc, param.description, param.intro,
+    d.customPrompt, d.prompt, d.aiPrompt,
+    payload.customPrompt, payload.prompt, payload.aiPrompt,
+    state.customPrompt, state.prompt, state.aiPrompt
+  ];
+  return fields.filter(Boolean).join(" \n ");
+}
+
+function findRestrictedMeAndYouTooTerms(data = {}, fallbackTitle = "") {
+  const text = normalizeRestrictedTopicText(collectRestrictedTopicText(data, fallbackTitle));
+  if (!text) return [];
+  const found = [];
+  for (const term of MEANDYOUTOO_RESTRICTED_TERMS) {
+    const normalized = normalizeRestrictedTopicText(term);
+    if (normalized && text.includes(normalized) && !found.includes(term)) found.push(term);
+  }
+  return found;
+}
+
+function requestHasRestrictedMeAndYouTooTopic({ user = {}, data = {}, title = "" } = {}) {
+  const role = String(user?.role || "client").toLowerCase();
+  if (role === "admin") return { restricted: false, terms: [] };
+  const terms = findRestrictedMeAndYouTooTerms(data, title);
+  return { restricted: terms.length > 0, terms };
+}
+
+
 
 function applyRespondentTitleToProjectData(data = {}, respondentTitle = "") {
   const safeData = data && typeof data === "object" && !Array.isArray(data) ? { ...data } : {};
@@ -2952,6 +3012,15 @@ app.post("/api/projects", auth, async (req, res) => {
   const finalPassationLogoName = extractPassationLogoName(data || {}, req.body || {});
   const finalPassationLogoDataUrl = extractPassationLogoDataUrl(data || {}, req.body || {});
   const finalTitle = extractProjectDisplayTitle(data || {}, title || "");
+
+  const restrictedTopic = requestHasRestrictedMeAndYouTooTopic({ user: req.user, data: data || {}, title: finalTitle || title || "" });
+  if (restrictedTopic.restricted) {
+    return res.status(403).json({
+      error: "Cette thématique relève du Catalogue Inclusion Expert Me&YouToo et n’est pas disponible en création autonome sur Into The Shift.",
+      code: "MEANDYOUTOO_RESTRICTED_TOPIC",
+      terms: restrictedTopic.terms
+    });
+  }
 
   let normalizedData = data && typeof data === "object"
     ? {
