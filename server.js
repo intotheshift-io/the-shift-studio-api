@@ -816,7 +816,7 @@ const MEANDYOUTOO_RESTRICTED_TERMS = [
   "religion", "religieuse", "religieux", "diversité religieuse", "diversite religieuse",
   "égalité professionnelle", "egalite professionnelle", "management inclusif", "manager inclusif",
   "collaborateur inclusif", "collègue inclusif", "collegue inclusif", "allié de la mixité",
-  "allie de la mixite", "mixité", "mixite", "micro-agression", "microagression",
+  "allie de la mixite", "micro-agression", "microagression",
   "stéréotype", "stereotype", "stéréotypes", "stereotypes"
 ];
 
