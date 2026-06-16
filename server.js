@@ -815,8 +815,8 @@ const MEANDYOUTOO_RESTRICTED_TERMS = [
   "handicap", "origine", "origines", "diversité des origines", "diversite des origines",
   "religion", "religieuse", "religieux", "diversité religieuse", "diversite religieuse",
   "égalité professionnelle", "egalite professionnelle", "management inclusif", "manager inclusif",
-  "collaborateur inclusif", "collègue inclusif", "collegue inclusif", "allié de la mixité",
-  "allie de la mixite", "micro-agression", "microagression",
+  "collaborateur inclusif", "collègue inclusif", "collegue inclusif", "mixité", "mixite",
+  "allié de la mixité", "allie de la mixite", "micro-agression", "microagression",
   "stéréotype", "stereotype", "stéréotypes", "stereotypes"
 ];
 
