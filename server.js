@@ -2877,6 +2877,44 @@ app.post("/api/custom-models", auth, async (req, res) => {
   }
 });
 
+
+app.delete("/api/custom-models/:id", auth, async (req, res) => {
+  const modelId = Number(req.params.id);
+
+  if (!Number.isInteger(modelId) || modelId <= 0) {
+    return res.status(400).json({ error: "ID modèle invalide." });
+  }
+
+  try {
+    const orgIds = await getUserNotificationOrganizationIds(req.user.id);
+    const params = [modelId, req.user.id];
+    let orgClause = "";
+    if (orgIds.length) {
+      params.push(orgIds);
+      orgClause = "OR organization_id = ANY($3::int[])";
+    }
+    const adminClause = String(req.user.role || "").toLowerCase() === "admin" ? "OR TRUE" : "";
+
+    const result = await pool.query(
+      `DELETE FROM custom_catalogue_models
+       WHERE id = $1
+         AND (user_id = $2 ${orgClause} ${adminClause})
+       RETURNING *`,
+      params
+    );
+
+    const deletedModel = result.rows[0];
+    if (!deletedModel) {
+      return res.status(404).json({ error: "Modèle personnalisé introuvable." });
+    }
+
+    res.json({ ok: true, deletedModel: formatCustomCatalogueModel(deletedModel) });
+  } catch (err) {
+    console.error("DELETE /api/custom-models/:id", err);
+    res.status(500).json({ error: "Erreur suppression modèle personnalisé." });
+  }
+});
+
 app.post("/api/custom-models/:id/use", auth, async (req, res) => {
   try {
     const orgIds = await getUserNotificationOrganizationIds(req.user.id);
@@ -3217,6 +3255,40 @@ app.patch("/api/projects/:id/respondent-title", auth, async (req, res) => {
     );
 
     const project = updateResult.rows[0];
+
+    await pool.query(
+      `UPDATE custom_catalogue_models
+       SET title = $1,
+           data = jsonb_set(
+             jsonb_set(
+               jsonb_set(
+                 COALESCE(data, '{}'::jsonb),
+                 '{title}',
+                 to_jsonb($1::text),
+                 true
+               ),
+               '{autodiagTitle}',
+               to_jsonb($1::text),
+               true
+             ),
+             '{parametrage}',
+             COALESCE(data->'parametrage', '{}'::jsonb) || jsonb_build_object(
+               'titre', $1::text,
+               'titre_repondants', $1::text,
+               'titreRespondants', $1::text,
+               'titre_visible_repondants', $1::text,
+               'titreVisibleRepondants', $1::text
+             ),
+             true
+           ),
+           updated_at = NOW()
+       WHERE source_project_id = $2
+         AND (
+           user_id = $3
+           OR EXISTS (SELECT 1 FROM users u WHERE u.id = $3 AND u.role = 'admin')
+         )`,
+      [respondentTitle, projectId, req.user.id]
+    );
 
     if (String(req.user.role || "").toLowerCase() !== "admin" && typeof sendRespondentTitleUpdatedAdminAlert === "function") {
       try {
