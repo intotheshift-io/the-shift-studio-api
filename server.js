@@ -6769,7 +6769,31 @@ L’équipe Into The Shift`;
   }
 });
 
-initDb().then(() => {
+async function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function startServer() {
+  const maxAttempts = Number(process.env.DB_INIT_MAX_ATTEMPTS || 12);
+  const retryDelayMs = Number(process.env.DB_INIT_RETRY_DELAY_MS || 5000);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await initDb();
+      console.log("Base de données initialisée");
+      break;
+    } catch (err) {
+      console.error(`Erreur initialisation base de données, tentative ${attempt}/${maxAttempts}`, err);
+
+      if (attempt === maxAttempts) {
+        console.error("Impossible d'initialiser la base de données après plusieurs tentatives. Arrêt du serveur.");
+        process.exit(1);
+      }
+
+      await wait(retryDelayMs);
+    }
+  }
+
   app.listen(PORT, () => {
     console.log(`API running on port ${PORT}`);
   });
@@ -6781,5 +6805,10 @@ initDb().then(() => {
   setInterval(() => {
     runOperationalAlerts().catch((err) => console.error("Erreur alertes opérationnelles planifiées", err));
   }, 6 * 60 * 60 * 1000);
+}
+
+startServer().catch((err) => {
+  console.error("Erreur fatale au démarrage du serveur", err);
+  process.exit(1);
 });
 
